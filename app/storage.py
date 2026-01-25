@@ -60,6 +60,16 @@ class Storage:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS daily_limits (
+                    user_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    count INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, date)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS subscription_actions (
                     token TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -185,6 +195,27 @@ class Storage:
             conn.execute(
                 "INSERT INTO downloads (user_id, platform, status) VALUES (?, ?, ?)",
                 (user_id, platform, status),
+            )
+
+    def get_daily_downloads(self, user_id: int, date_value: str) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT count FROM daily_limits WHERE user_id = ? AND date = ?",
+                (user_id, date_value),
+            )
+            row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def increment_daily_downloads(self, user_id: int, date_value: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO daily_limits (user_id, date, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, date)
+                DO UPDATE SET count = count + 1
+                """,
+                (user_id, date_value),
             )
 
     def get_usage_stats(self) -> tuple[int, int]:

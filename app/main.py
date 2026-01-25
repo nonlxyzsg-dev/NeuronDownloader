@@ -1,5 +1,7 @@
 import os
 
+from datetime import datetime
+
 from telebot import TeleBot, types
 
 from app.config import (
@@ -20,21 +22,21 @@ def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMark
     for option in options:
         markup.row(
             types.InlineKeyboardButton(
-                text=option.label,
+                text=f"🎬 {option.label}",
                 callback_data=f"dl|{token}|{option.format_id}",
             ),
             types.InlineKeyboardButton(
-                text=f"Подписаться {option.label}",
+                text=f"⭐ Подписаться {option.label}",
                 callback_data=f"sub|{token}|{option.label}",
             ),
         )
     markup.row(
         types.InlineKeyboardButton(
-            text="Максимальное качество",
+            text="🚀 Максимальное качество",
             callback_data=f"dl|{token}|best",
         ),
         types.InlineKeyboardButton(
-            text="Подписаться (max)",
+            text="⭐ Подписаться (max)",
             callback_data=f"sub|{token}|best",
         ),
     )
@@ -45,7 +47,7 @@ def build_subscription_keyboard(token: str) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton(
-            text="Отписаться",
+            text="🧹 Отписаться",
             callback_data=f"unsub|{token}",
         )
     )
@@ -96,22 +98,18 @@ def main() -> None:
         if storage.is_blocked(user_id):
             bot.send_message(chat_id, "Вы заблокированы.")
             return False
-        if REQUIRED_CHAT_IDS:
-            for required_chat in REQUIRED_CHAT_IDS:
-                try:
-                    member = bot.get_chat_member(required_chat, user_id)
-                except Exception:
-                    bot.send_message(chat_id, "Не удалось проверить подписку на обязательный чат.")
-                    return False
-                if member.status in ("left", "kicked"):
-                    bot.send_message(
-                        chat_id,
-                        (
-                            "Для использования бота подпишитесь на обязательные каналы/чаты: "
-                            f"{', '.join(str(chat) for chat in REQUIRED_CHAT_IDS)}"
-                        ),
-                    )
-                    return False
+        return True
+
+    def is_required_member(user_id: int) -> bool:
+        if not REQUIRED_CHAT_IDS:
+            return True
+        for required_chat in REQUIRED_CHAT_IDS:
+            try:
+                member = bot.get_chat_member(required_chat, user_id)
+            except Exception:
+                return False
+            if member.status in ("left", "kicked"):
+                return False
         return True
 
     def queue_download(
@@ -145,8 +143,10 @@ def main() -> None:
         bot.send_message(
             message.chat.id,
             (
+                "Привет! Я Нейрон Downloader из экосистемы канала «Банка с нейронами». "
+                "На канале я рассказываю про ИИ технологии простым языком для нетехнической аудитории.\n\n"
                 "Отправьте ссылку на видео YouTube/Instagram/VK или ссылку на канал YouTube. "
-                "Бот покажет варианты качества и скачает видео с описанием."
+                "Бот предложит варианты качества и скачает видео с описанием."
             ),
             reply_markup=build_main_menu(),
         )
@@ -169,13 +169,13 @@ def main() -> None:
             lines.append(f"• {label}")
             markup.add(
                 types.InlineKeyboardButton(
-                    text=f"Удалить {resolution or 'max'}",
+                    text=f"🗑️ Удалить {resolution or 'max'}",
                     callback_data=f"subdel|{token}",
                 )
             )
         markup.add(
             types.InlineKeyboardButton(
-                text="Отключить все",
+                text="🧹 Отключить все",
                 callback_data="subdel_all",
             )
         )
@@ -276,6 +276,20 @@ def main() -> None:
             bot.send_message(message.chat.id, "Пожалуйста, отправьте ссылку.")
             return
         clear_last_inline(message.from_user.id, message.chat.id)
+        subscribed = is_required_member(message.from_user.id)
+        if not subscribed:
+            today = datetime.utcnow().date().isoformat()
+            downloads_today = storage.get_daily_downloads(message.from_user.id, today)
+            if downloads_today >= 1:
+                bot.send_message(
+                    message.chat.id,
+                    (
+                        "Сегодня уже было одно скачивание. "
+                        "Поддержите разработчика и подпишитесь на наши ресурсы, "
+                        "чтобы получить неограниченные загрузки."
+                    ),
+                )
+                return
         try:
             info = downloader.get_info(url)
         except Exception as exc:
@@ -284,6 +298,18 @@ def main() -> None:
         title = info.get("title") or "Видео"
         description = info.get("description") or ""
         channel_url = info.get("channel_url") or info.get("uploader_url")
+        if not subscribed:
+            today = datetime.utcnow().date().isoformat()
+            storage.increment_daily_downloads(message.from_user.id, today)
+            bot.send_message(
+                message.chat.id,
+                (
+                    "Я скачаю это видео, но без подписки доступно только одно скачивание в день. "
+                    "Поддержите разработчика и подпишитесь на наши ресурсы для снятия ограничений."
+                ),
+            )
+            queue_download(message.from_user.id, url, None, description)
+            return
         token = storage.create_request(url, title, description, channel_url)
         options = downloader.list_formats(info)
         markup = build_format_keyboard(token, options)
