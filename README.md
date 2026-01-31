@@ -12,14 +12,37 @@
 - Админка: статистика, список пользователей, блокировка.
 - Контроль доступа: можно требовать подписку на обязательные чаты/каналы.
 
-## Быстрый старт
+## Быстрый старт (без Docker)
 
-1. Установите зависимости:
+### Вариант 1: pipenv
+
+1. Установите pipenv (если ещё не установлен):
+   ```bash
+   pip install pipenv
+   ```
+2. Создайте окружение и установите зависимости:
+   ```bash
+   pipenv install -r requirements.txt
+   ```
+3. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
+4. Запустите бота:
+   ```bash
+   pipenv run python -m app.main
+   ```
+
+### Вариант 2: venv
+
+1. Создайте виртуальное окружение и активируйте его:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Установите зависимости:
    ```bash
    pip install -r requirements.txt
    ```
-2. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
-3. Запустите бота:
+3. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
+4. Запустите бота:
    ```bash
    python -m app.main
    ```

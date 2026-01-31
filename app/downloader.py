@@ -17,17 +17,17 @@ class VideoDownloader:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 
-    def _base_opts(self) -> dict:
+    def _base_opts(self, skip_download: bool = False) -> dict:
         opts: dict = {
             "quiet": True,
-            "skip_download": True,
+            "skip_download": skip_download,
         }
         if COOKIES_FILE:
             opts["cookiefile"] = COOKIES_FILE
         return opts
 
     def get_info(self, url: str) -> dict:
-        with YoutubeDL(self._base_opts()) as ydl:
+        with YoutubeDL(self._base_opts(skip_download=True)) as ydl:
             return ydl.extract_info(url, download=False)
 
     def list_formats(self, info: dict) -> list[FormatOption]:
@@ -88,7 +88,7 @@ class VideoDownloader:
         return None
 
     def get_latest_entry(self, channel_url: str) -> dict | None:
-        ydl_opts = self._base_opts()
+        ydl_opts = self._base_opts(skip_download=True)
         ydl_opts["extract_flat"] = True
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(channel_url, download=False)
