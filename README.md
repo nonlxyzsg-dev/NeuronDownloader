@@ -14,6 +14,24 @@
 
 ## Быстрый старт (без Docker)
 
+### Вариант 1: pipenv
+
+1. Установите pipenv (если ещё не установлен):
+   ```bash
+   pip install pipenv
+   ```
+2. Создайте окружение и установите зависимости:
+   ```bash
+   pipenv install -r requirements.txt
+   ```
+3. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
+4. Запустите бота:
+   ```bash
+   pipenv run python -m app.main
+   ```
+
+### Вариант 2: venv
+
 1. Создайте виртуальное окружение и активируйте его:
    ```bash
    python -m venv .venv

@@ -1,6 +1,6 @@
 import os
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from telebot import TeleBot, types
 
@@ -278,7 +278,7 @@ def main() -> None:
         clear_last_inline(message.from_user.id, message.chat.id)
         subscribed = is_required_member(message.from_user.id)
         if not subscribed:
-            today = datetime.utcnow().date().isoformat()
+            today = datetime.now(timezone.utc).date().isoformat()
             downloads_today = storage.get_daily_downloads(message.from_user.id, today)
             if downloads_today >= 1:
                 bot.send_message(
@@ -293,13 +293,23 @@ def main() -> None:
         try:
             info = downloader.get_info(url)
         except Exception as exc:
-            bot.send_message(message.chat.id, f"Не удалось обработать ссылку: {exc}")
+            error_text = str(exc)
+            if "sign in to confirm" in error_text.lower():
+                bot.send_message(
+                    message.chat.id,
+                    (
+                        "YouTube требует подтверждения входа. "
+                        "Добавьте cookies и повторите попытку."
+                    ),
+                )
+            else:
+                bot.send_message(message.chat.id, f"Не удалось обработать ссылку: {exc}")
             return
         title = info.get("title") or "Видео"
         description = info.get("description") or ""
         channel_url = info.get("channel_url") or info.get("uploader_url")
         if not subscribed:
-            today = datetime.utcnow().date().isoformat()
+            today = datetime.now(timezone.utc).date().isoformat()
             storage.increment_daily_downloads(message.from_user.id, today)
             bot.send_message(
                 message.chat.id,
