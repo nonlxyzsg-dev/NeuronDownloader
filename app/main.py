@@ -40,6 +40,16 @@ def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMark
             callback_data=f"sub|{token}|best",
         ),
     )
+    markup.row(
+        types.InlineKeyboardButton(
+            text="🎧 Только звук",
+            callback_data=f"dl|{token}|audio",
+        ),
+        types.InlineKeyboardButton(
+            text="⭐ Подписаться (звук)",
+            callback_data=f"sub|{token}|audio",
+        ),
+    )
     return markup
 
 
@@ -114,23 +124,55 @@ def main() -> None:
 
     def queue_download(
         user_id: int,
+        chat_id: int,
         url: str,
         selected_format: str | None,
-        description: str,
+        title: str,
+        status_message_id: int | None = None,
+        audio_only: bool = False,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
             try:
-                file_path, info = downloader.download(url, selected_format)
-                if description:
-                    bot.send_message(user_id, description[:4000])
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "⬇️ Скачивание...",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
+                file_path, info = downloader.download(url, selected_format, audio_only=audio_only)
                 with open(file_path, "rb") as handle:
-                    bot.send_video(user_id, handle)
+                    if audio_only:
+                        bot.send_audio(user_id, handle, caption=title[:1024])
+                    else:
+                        bot.send_video(user_id, handle, caption=title[:1024])
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "✅ Отправлено.",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
                 storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
             except Exception as exc:
                 storage.log_download(user_id, "unknown", "failed")
-                bot.send_message(user_id, f"Ошибка загрузки: {exc}")
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            f"❌ Ошибка загрузки: {exc}",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    bot.send_message(user_id, f"Ошибка загрузки: {exc}")
 
         download_manager.submit(_job)
 
@@ -143,10 +185,8 @@ def main() -> None:
         bot.send_message(
             message.chat.id,
             (
-                "Привет! Я Нейрон Downloader из экосистемы канала «Банка с нейронами». "
-                "На канале я рассказываю про ИИ технологии простым языком для нетехнической аудитории.\n\n"
-                "Отправьте ссылку на видео YouTube/Instagram/VK или ссылку на канал YouTube. "
-                "Бот предложит варианты качества и скачает видео с описанием."
+                "Привет! Отправьте ссылку на видео YouTube/Instagram/VK или ссылку на канал YouTube. "
+                "Бот предложит варианты качества и скачает видео."
             ),
             reply_markup=build_main_menu(),
         )
@@ -306,24 +346,22 @@ def main() -> None:
                 bot.send_message(message.chat.id, f"Не удалось обработать ссылку: {exc}")
             return
         title = info.get("title") or "Видео"
-        description = info.get("description") or ""
         channel_url = info.get("channel_url") or info.get("uploader_url")
-        if not subscribed:
-            today = datetime.now(timezone.utc).date().isoformat()
-            storage.increment_daily_downloads(message.from_user.id, today)
-            bot.send_message(
-                message.chat.id,
-                (
-                    "Я скачаю это видео, но без подписки доступно только одно скачивание в день. "
-                    "Поддержите разработчика и подпишитесь на наши ресурсы для снятия ограничений."
-                ),
-            )
-            queue_download(message.from_user.id, url, None, description)
-            return
-        token = storage.create_request(url, title, description, channel_url)
+        token = storage.create_request(url, title, "", channel_url)
         options = downloader.list_formats(info)
         markup = build_format_keyboard(token, options)
-        sent = bot.send_message(message.chat.id, f"{title}\nВыберите качество:", reply_markup=markup)
+        if not subscribed:
+            note = (
+                "Без подписки доступно одно скачивание в день. "
+                "Поддержите разработчика и подпишитесь на наши ресурсы для снятия ограничений.\n\n"
+            )
+        else:
+            note = ""
+        sent = bot.send_message(
+            message.chat.id,
+            f"{note}{title}\nВыберите качество или формат:",
+            reply_markup=markup,
+        )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
 
     @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("dl|"))
@@ -336,14 +374,30 @@ def main() -> None:
         if request is None:
             bot.answer_callback_query(call.id, "Запрос устарел")
             return
-        url, _, description, _ = request
+        url, title, _, _ = request
+        if not is_required_member(call.from_user.id):
+            today = datetime.now(timezone.utc).date().isoformat()
+            downloads_today = storage.get_daily_downloads(call.from_user.id, today)
+            if downloads_today >= 1:
+                bot.answer_callback_query(call.id, "Лимит на сегодня исчерпан.")
+                return
+            storage.increment_daily_downloads(call.from_user.id, today)
         bot.answer_callback_query(call.id, "Загрузка добавлена в очередь.")
-        selected_format = None if format_id == "best" else format_id
-        queue_download(call.from_user.id, url, selected_format, description)
+        selected_format = None if format_id in ("best", "audio") else format_id
+        audio_only = format_id == "audio"
+        queue_download(
+            call.from_user.id,
+            call.message.chat.id,
+            url,
+            selected_format,
+            title,
+            status_message_id=call.message.message_id,
+            audio_only=audio_only,
+        )
         storage.delete_request(token)
         try:
             bot.edit_message_text(
-                "Загрузка добавлена в очередь.",
+                "⏳ Загрузка в очереди...",
                 call.message.chat.id,
                 call.message.message_id,
             )
