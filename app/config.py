@@ -48,3 +48,9 @@ USER_AGENT = os.getenv(
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36",
 )
+ENABLE_REACTIONS = os.getenv("ENABLE_REACTIONS", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)

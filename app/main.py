@@ -15,6 +15,7 @@ from app.config import (
     FREE_DOWNLOAD_WINDOW_SECONDS,
     MAX_CONCURRENT_DOWNLOADS,
     REQUIRED_CHAT_IDS,
+    ENABLE_REACTIONS,
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
@@ -212,11 +213,17 @@ def main() -> None:
         title: str,
         status_message_id: int | None = None,
         audio_only: bool = False,
+        reaction_message_id: int | None = None,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
             try:
+                if reaction_message_id:
+                    try:
+                        bot.delete_message(chat_id, reaction_message_id)
+                    except Exception:
+                        pass
                 if status_message_id:
                     try:
                         bot.edit_message_text(
@@ -407,6 +414,36 @@ def main() -> None:
         if not subscribed and is_free_limit_reached(message.from_user.id):
             bot.send_message(message.chat.id, format_limit_message())
             return
+        reaction_message_id = None
+        if ENABLE_REACTIONS:
+            try:
+                if hasattr(bot, "set_message_reaction"):
+                    if hasattr(types, "ReactionTypeEmoji"):
+                        reaction = [types.ReactionTypeEmoji("⚡️")]
+                    else:
+                        reaction = ["⚡️"]
+                    bot.set_message_reaction(
+                        message.chat.id,
+                        message.message_id,
+                        reaction=reaction,
+                    )
+                else:
+                    sent = bot.send_message(
+                        message.chat.id,
+                        "⚡️",
+                        reply_to_message_id=message.message_id,
+                    )
+                    reaction_message_id = sent.message_id
+            except Exception:
+                try:
+                    sent = bot.send_message(
+                        message.chat.id,
+                        "⚡️",
+                        reply_to_message_id=message.message_id,
+                    )
+                    reaction_message_id = sent.message_id
+                except Exception:
+                    reaction_message_id = None
         bot.send_chat_action(message.chat.id, "typing")
         try:
             info = downloader.get_info(url)
@@ -428,7 +465,12 @@ def main() -> None:
             return
         title = info.get("title") or "Видео"
         channel_url = info.get("channel_url") or info.get("uploader_url")
-        token = storage.create_request(url, title, "", channel_url)
+        token = storage.create_request(
+            url,
+            title,
+            str(reaction_message_id or ""),
+            channel_url,
+        )
         options = downloader.list_formats(info)
         if not options:
             has_video = any(
@@ -467,7 +509,10 @@ def main() -> None:
         if request is None:
             bot.answer_callback_query(call.id, "Запрос устарел")
             return
-        url, title, _, _ = request
+        url, title, reaction_hint, _ = request
+        reaction_message_id = None
+        if reaction_hint and reaction_hint.isdigit():
+            reaction_message_id = int(reaction_hint)
         if not is_required_member(call.from_user.id):
             if is_free_limit_reached(call.from_user.id):
                 bot.answer_callback_query(call.id, "Лимит на период исчерпан.")
@@ -485,6 +530,7 @@ def main() -> None:
             title,
             status_message_id=call.message.message_id,
             audio_only=audio_only,
+            reaction_message_id=reaction_message_id,
         )
         storage.delete_request(token)
         try:
