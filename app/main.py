@@ -197,6 +197,22 @@ def main() -> None:
             "чтобы получить неограниченные загрузки."
         )
 
+    def format_bytes(value: float | None) -> str:
+        if value is None:
+            return "0 Б"
+        units = ["Б", "КБ", "МБ", "ГБ", "ТБ"]
+        size = float(value)
+        for unit in units:
+            if size < 1024 or unit == units[-1]:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} {units[-1]}"
+
+    def format_speed(value: float | None) -> str:
+        if value is None:
+            return "0 Б/с"
+        return f"{format_bytes(value)}/с"
+
     def is_free_limit_reached(user_id: int) -> bool:
         if is_required_member(user_id):
             return False
@@ -218,22 +234,58 @@ def main() -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
+            progress_message_id: int | None = None
+            last_update = 0.0
+            last_text = ""
+
+            def progress_hook(data: dict) -> None:
+                nonlocal last_update, last_text
+                if not progress_message_id:
+                    return
+                if data.get("status") != "downloading":
+                    return
+                now = time.monotonic()
+                if now - last_update < 1:
+                    return
+                downloaded = data.get("downloaded_bytes") or 0
+                total = data.get("total_bytes") or data.get("total_bytes_estimate")
+                speed = data.get("speed")
+                if total:
+                    percent = min(downloaded / total * 100, 100)
+                    text = (
+                        f"⬇️ Скачивание: {percent:.1f}% "
+                        f"• {format_speed(speed)}"
+                    )
+                else:
+                    text = (
+                        f"⬇️ Скачивание: {format_bytes(downloaded)} "
+                        f"• {format_speed(speed)}"
+                    )
+                if text == last_text:
+                    return
+                try:
+                    bot.edit_message_text(text, chat_id, progress_message_id)
+                    last_update = now
+                    last_text = text
+                except Exception:
+                    pass
             try:
                 if reaction_message_id:
                     try:
                         bot.delete_message(chat_id, reaction_message_id)
                     except Exception:
                         pass
-                if status_message_id:
-                    try:
-                        bot.edit_message_text(
-                            "⬇️ Скачивание...",
-                            chat_id,
-                            status_message_id,
-                        )
-                    except Exception:
-                        pass
-                file_path, info = downloader.download(url, selected_format, audio_only=audio_only)
+                try:
+                    sent = bot.send_message(chat_id, "⬇️ Скачивание: 0.0% • 0 Б/с")
+                    progress_message_id = sent.message_id
+                except Exception:
+                    progress_message_id = None
+                file_path, info = downloader.download(
+                    url,
+                    selected_format,
+                    audio_only=audio_only,
+                    progress_callback=progress_hook,
+                )
                 with open(file_path, "rb") as handle:
                     if audio_only:
                         bot.send_chat_action(user_id, "upload_audio")
@@ -241,13 +293,9 @@ def main() -> None:
                     else:
                         bot.send_chat_action(user_id, "upload_video")
                         bot.send_video(user_id, handle, caption=title[:1024])
-                if status_message_id:
+                if progress_message_id:
                     try:
-                        bot.edit_message_text(
-                            "✅ Отправлено.",
-                            chat_id,
-                            status_message_id,
-                        )
+                        bot.delete_message(chat_id, progress_message_id)
                     except Exception:
                         pass
                 storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
@@ -256,12 +304,12 @@ def main() -> None:
                 error_message = f"Ошибка загрузки: {exc}"
                 if is_youtube_url(url):
                     error_message = append_youtube_client_hint(error_message)
-                if status_message_id:
+                if progress_message_id:
                     try:
                         bot.edit_message_text(
                             f"❌ {error_message}",
                             chat_id,
-                            status_message_id,
+                            progress_message_id,
                         )
                     except Exception:
                         pass
