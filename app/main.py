@@ -45,7 +45,7 @@ def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMark
     )
     markup.add(
         types.InlineKeyboardButton(
-            text="⭐ Подписаться",
+            text="⭐ Подписка на канал (уведомления)",
             callback_data=f"submenu|{token}",
         )
     )
@@ -445,7 +445,11 @@ def main() -> None:
         note = "" if subscribed else f"{format_limit_message()}\n\n"
         sent = bot.send_message(
             message.chat.id,
-            f"{note}{title}\nВыберите качество или формат:",
+            (
+                f"{note}{title}\n"
+                "Подписка на канал уведомит о новых видео.\n"
+                "Выберите качество или формат:"
+            ),
             reply_markup=markup,
         )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
@@ -539,7 +543,7 @@ def main() -> None:
         options = downloader.list_formats(info)
         try:
             bot.edit_message_text(
-                f"{title}\nВыберите качество подписки:",
+                f"{title}\nВы выбираете качество для подписки.\nВыберите качество подписки:",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=build_subscription_menu(token, options),
@@ -547,7 +551,7 @@ def main() -> None:
         except Exception:
             bot.send_message(
                 call.message.chat.id,
-                f"{title}\nВыберите качество подписки:",
+                f"{title}\nВы выбираете качество для подписки.\nВыберите качество подписки:",
                 reply_markup=build_subscription_menu(token, options),
             )
         storage.set_last_inline_message_id(call.from_user.id, call.message.message_id)
@@ -571,7 +575,11 @@ def main() -> None:
         options = downloader.list_formats(info)
         try:
             bot.edit_message_text(
-                f"{title}\nВыберите качество или формат:",
+                (
+                    f"{title}\n"
+                    "Возвращаемся к выбору качества скачивания.\n"
+                    "Выберите качество или формат:"
+                ),
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=build_format_keyboard(token, options),
@@ -579,7 +587,11 @@ def main() -> None:
         except Exception:
             bot.send_message(
                 call.message.chat.id,
-                f"{title}\nВыберите качество или формат:",
+                (
+                    f"{title}\n"
+                    "Возвращаемся к выбору качества скачивания.\n"
+                    "Выберите качество или формат:"
+                ),
                 reply_markup=build_format_keyboard(token, options),
             )
         storage.set_last_inline_message_id(call.from_user.id, call.message.message_id)
