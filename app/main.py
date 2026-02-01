@@ -16,6 +16,7 @@ from app.config import (
     MAX_CONCURRENT_DOWNLOADS,
     REQUIRED_CHAT_IDS,
     ENABLE_REACTIONS,
+    TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
@@ -289,10 +290,35 @@ def main() -> None:
                 with open(file_path, "rb") as handle:
                     if audio_only:
                         bot.send_chat_action(user_id, "upload_audio")
-                        bot.send_audio(user_id, handle, caption=title[:1024])
+                        upload_start = time.monotonic()
+                        bot.send_audio(
+                            user_id,
+                            handle,
+                            caption=title[:1024],
+                            timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                        )
+                        upload_duration = time.monotonic() - upload_start
+                        logging.info(
+                            "Audio uploaded to user %s in %.2f seconds",
+                            user_id,
+                            upload_duration,
+                        )
                     else:
                         bot.send_chat_action(user_id, "upload_video")
-                        bot.send_video(user_id, handle, caption=title[:1024])
+                        upload_start = time.monotonic()
+                        bot.send_video(
+                            user_id,
+                            handle,
+                            caption=title[:1024],
+                            timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                            supports_streaming=True,
+                        )
+                        upload_duration = time.monotonic() - upload_start
+                        logging.info(
+                            "Video uploaded to user %s in %.2f seconds",
+                            user_id,
+                            upload_duration,
+                        )
                 if progress_message_id:
                     try:
                         bot.delete_message(chat_id, progress_message_id)
