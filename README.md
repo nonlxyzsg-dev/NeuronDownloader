@@ -130,3 +130,8 @@ COOKIES_FILE=/path/to/cookies.txt
 - `ADMIN_IDS` — список ID администраторов через запятую.
 - `REQUIRED_CHAT_IDS` — обязательные чаты/каналы через запятую.
 - `MAX_CONCURRENT_DOWNLOADS` — максимальное число параллельных загрузок.
+- `YOUTUBE_PLAYER_CLIENTS` — список клиентов YouTube через запятую. Рекомендуемые значения: `android,web`.
+  Поддерживаемые варианты (зависят от версии `yt-dlp`): `default`, `all`, `android`, `android_creator`, `ios`,
+  `web`, `web_creator`, `mweb`, `tv`, `tv_embedded`. Если возникают ошибки, попробуйте убрать `android_creator`.
+- `YOUTUBE_JS_RUNTIME` — имя JS-рантайма для обработки подписи (например, `node`, `deno`, `bun`).
+- `YOUTUBE_JS_RUNTIME_PATH` — путь к бинарнику JS-рантайма (например, `/usr/bin/node`).

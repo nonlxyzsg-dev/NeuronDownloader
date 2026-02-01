@@ -102,6 +102,19 @@ def build_main_menu() -> types.ReplyKeyboardMarkup:
     return markup
 
 
+def is_youtube_url(url: str) -> bool:
+    lowered = url.lower()
+    return "youtube.com" in lowered or "youtu.be" in lowered
+
+
+def append_youtube_client_hint(message: str) -> str:
+    hint = (
+        "Подсказка: клиент YouTube \"android_creator\" может быть неподдерживаем. "
+        "Попробуйте убрать его из YOUTUBE_PLAYER_CLIENTS или заменить на android/web."
+    )
+    return f"{message}\n\n{hint}"
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан")
@@ -231,17 +244,20 @@ def main() -> None:
                 storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
             except Exception as exc:
                 storage.log_download(user_id, "unknown", "failed")
+                error_message = f"Ошибка загрузки: {exc}"
+                if is_youtube_url(url):
+                    error_message = append_youtube_client_hint(error_message)
                 if status_message_id:
                     try:
                         bot.edit_message_text(
-                            f"❌ Ошибка загрузки: {exc}",
+                            f"❌ {error_message}",
                             chat_id,
                             status_message_id,
                         )
                     except Exception:
                         pass
                 else:
-                    bot.send_message(user_id, f"Ошибка загрузки: {exc}")
+                    bot.send_message(user_id, error_message)
 
         download_manager.submit(_job)
 
@@ -402,7 +418,10 @@ def main() -> None:
                     ),
                 )
             else:
-                bot.send_message(message.chat.id, f"Не удалось обработать ссылку: {exc}")
+                error_message = f"Не удалось обработать ссылку: {exc}"
+                if is_youtube_url(url):
+                    error_message = append_youtube_client_hint(error_message)
+                bot.send_message(message.chat.id, error_message)
             return
         title = info.get("title") or "Видео"
         channel_url = info.get("channel_url") or info.get("uploader_url")
@@ -414,13 +433,13 @@ def main() -> None:
                 for fmt in info.get("formats", [])
             )
             if not has_video:
-                bot.send_message(
-                    message.chat.id,
-                    (
-                        "Не удалось получить видеоформаты. "
-                        "Возможно, требуется обновить cookies или настройки клиента."
-                    ),
+                warning_text = (
+                    "Не удалось получить видеоформаты. "
+                    "Возможно, требуется обновить cookies или настройки клиента."
                 )
+                if is_youtube_url(url):
+                    warning_text = append_youtube_client_hint(warning_text)
+                bot.send_message(message.chat.id, warning_text)
                 return
         markup = build_format_keyboard(token, options)
         note = "" if subscribed else f"{format_limit_message()}\n\n"
