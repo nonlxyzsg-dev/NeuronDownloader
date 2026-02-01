@@ -70,6 +70,14 @@ class Storage:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS free_downloads (
+                    user_id INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS subscription_actions (
                     token TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -217,6 +225,22 @@ class Storage:
                 """,
                 (user_id, date_value),
             )
+
+    def log_free_download(self, user_id: int, created_at: int) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO free_downloads (user_id, created_at) VALUES (?, ?)",
+                (user_id, created_at),
+            )
+
+    def count_free_downloads_since(self, user_id: int, start_ts: int) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM free_downloads WHERE user_id = ? AND created_at >= ?",
+                (user_id, start_ts),
+            )
+            row = cur.fetchone()
+        return int(row[0]) if row else 0
 
     def get_usage_stats(self) -> tuple[int, int]:
         with sqlite3.connect(self.db_path) as conn:
