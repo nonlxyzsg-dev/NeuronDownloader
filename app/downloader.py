@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from yt_dlp import YoutubeDL
 
@@ -166,12 +167,15 @@ class VideoDownloader:
         url: str,
         format_id: str | None,
         audio_only: bool = False,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict]:
         ydl_opts = self._base_opts()
         if audio_only:
             ydl_opts["format"] = "bestaudio/best"
         elif format_id:
             ydl_opts["format"] = f"{format_id}+bestaudio/best"
+        if progress_callback:
+            ydl_opts["progress_hooks"] = [progress_callback]
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
         file_path = ydl.prepare_filename(info)
