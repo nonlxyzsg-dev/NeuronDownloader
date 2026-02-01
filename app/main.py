@@ -24,35 +24,61 @@ from app.subscriptions import SubscriptionMonitor
 def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup()
     for option in options:
-        markup.row(
+        markup.add(
             types.InlineKeyboardButton(
                 text=f"🎬 {option.label}",
                 callback_data=f"dl|{token}|{option.format_id}",
-            ),
-            types.InlineKeyboardButton(
-                text=f"⭐ Подписаться {option.label}",
-                callback_data=f"sub|{token}|{option.label}",
-            ),
+            )
         )
-    markup.row(
+    markup.add(
         types.InlineKeyboardButton(
             text="🚀 Максимальное качество",
             callback_data=f"dl|{token}|best",
         ),
-        types.InlineKeyboardButton(
-            text="⭐ Подписаться (max)",
-            callback_data=f"sub|{token}|best",
-        ),
     )
-    markup.row(
+    markup.add(
         types.InlineKeyboardButton(
             text="🎧 Только звук",
             callback_data=f"dl|{token}|audio",
         ),
+    )
+    markup.add(
         types.InlineKeyboardButton(
-            text="⭐ Подписаться (звук)",
+            text="⭐ Подписаться",
+            callback_data=f"submenu|{token}",
+        )
+    )
+    return markup
+
+
+def build_subscription_menu(
+    token: str, options: list
+) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup()
+    for option in options:
+        markup.add(
+            types.InlineKeyboardButton(
+                text=f"⭐ {option.label}",
+                callback_data=f"sub|{token}|{option.label}",
+            )
+        )
+    markup.add(
+        types.InlineKeyboardButton(
+            text="⭐ Максимальное качество",
+            callback_data=f"sub|{token}|best",
+        )
+    )
+    markup.add(
+        types.InlineKeyboardButton(
+            text="⭐ Только звук",
             callback_data=f"sub|{token}|audio",
-        ),
+        )
+    )
+    markup.add(
+        types.InlineKeyboardButton(
+            text="⬅️ Назад к скачиванию",
+            callback_data=f"back|{token}",
+        )
     )
     return markup
 
@@ -444,6 +470,70 @@ def main() -> None:
                 call.message.chat.id,
                 f"Подписка на {title} оформлена. Бот будет отслеживать новые видео.",
                 reply_markup=build_subscription_keyboard(token),
+        )
+        storage.set_last_inline_message_id(call.from_user.id, call.message.message_id)
+
+    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("submenu|"))
+    def handle_subscription_menu(call: types.CallbackQuery) -> None:
+        ensure_user(call.from_user)
+        if not check_access(call.from_user.id, call.message.chat.id):
+            return
+        _, token = call.data.split("|", 1)
+        request = storage.get_request(token)
+        if request is None:
+            bot.answer_callback_query(call.id, "Запрос устарел")
+            return
+        url, title, _, _ = request
+        try:
+            info = downloader.get_info(url)
+        except Exception as exc:
+            bot.answer_callback_query(call.id, f"Не удалось обновить список: {exc}")
+            return
+        options = downloader.list_formats(info)
+        try:
+            bot.edit_message_text(
+                f"{title}\nВыберите качество подписки:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=build_subscription_menu(token, options),
+            )
+        except Exception:
+            bot.send_message(
+                call.message.chat.id,
+                f"{title}\nВыберите качество подписки:",
+                reply_markup=build_subscription_menu(token, options),
+            )
+        storage.set_last_inline_message_id(call.from_user.id, call.message.message_id)
+
+    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("back|"))
+    def handle_back_to_download(call: types.CallbackQuery) -> None:
+        ensure_user(call.from_user)
+        if not check_access(call.from_user.id, call.message.chat.id):
+            return
+        _, token = call.data.split("|", 1)
+        request = storage.get_request(token)
+        if request is None:
+            bot.answer_callback_query(call.id, "Запрос устарел")
+            return
+        url, title, _, _ = request
+        try:
+            info = downloader.get_info(url)
+        except Exception as exc:
+            bot.answer_callback_query(call.id, f"Не удалось обновить список: {exc}")
+            return
+        options = downloader.list_formats(info)
+        try:
+            bot.edit_message_text(
+                f"{title}\nВыберите качество или формат:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=build_format_keyboard(token, options),
+            )
+        except Exception:
+            bot.send_message(
+                call.message.chat.id,
+                f"{title}\nВыберите качество или формат:",
+                reply_markup=build_format_keyboard(token, options),
             )
         storage.set_last_inline_message_id(call.from_user.id, call.message.message_id)
 
