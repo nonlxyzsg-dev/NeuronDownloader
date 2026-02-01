@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from yt_dlp import YoutubeDL
@@ -107,10 +108,27 @@ class VideoDownloader:
     def list_formats(self, info: dict) -> list[FormatOption]:
         formats = info.get("formats", [])
         options: dict[str, tuple[FormatOption, float]] = {}
+        raw_heights: list[tuple[str, int | None]] = []
         for fmt in formats:
+            if fmt.get("vcodec") in (None, "none"):
+                continue
             height = fmt.get("height")
+            if height is None:
+                format_note = fmt.get("format_note") or ""
+                resolution = fmt.get("resolution") or ""
+                combined = f"{format_note} {resolution}"
+                match = re.search(r"(\d{3,4})p", combined)
+                if match:
+                    height = int(match.group(1))
+                else:
+                    match = re.search(r"\d{3,4}x(\d{3,4})", combined)
+                    if match:
+                        height = int(match.group(1))
             format_id = fmt.get("format_id")
+            raw_heights.append((str(format_id), height))
             if height is None or format_id is None:
+                continue
+            if height < 144:
                 continue
             label = f"{height}p"
             current = options.get(label)
@@ -125,6 +143,18 @@ class VideoDownloader:
             key=lambda opt: opt.height or 0,
             reverse=True,
         )
+        if formats:
+            logging.info(
+                "Доступные форматы (сырые): %s",
+                ", ".join(
+                    f"{format_id or 'unknown'}:{height or 'n/a'}"
+                    for format_id, height in raw_heights
+                ),
+            )
+            logging.info(
+                "Доступные варианты качества: %s",
+                ", ".join(option.label for option in sorted_options) or "нет",
+            )
         return sorted_options
 
     def download(
