@@ -14,6 +14,14 @@
 
 ## Быстрый старт (без Docker)
 
+**Команда для запуска** (из корня проекта, с активированным venv или через pipenv):
+
+```bash
+python -m app.main
+```
+
+Через pipenv: `pipenv run python -m app.main`. Модуль указывается без `.py`.
+
 ### Вариант 1: pipenv
 
 1. Установите pipenv (если ещё не установлен):
@@ -98,11 +106,20 @@
 
 ### Cookies для Instagram/VK/YouTube
 
-Экспортируйте cookies в файл и укажите путь в `COOKIES_FILE`. Например:
+Если YouTube выдаёт ошибку **«Sign in to confirm you're not a bot»**, нужен файл cookies авторизованного аккаунта.
+
+1. Войдите в YouTube в браузере (Chrome/Firefox).
+2. Установите расширение для экспорта cookies в формате Netscape, например:
+   - [cookies.txt](https://github.com/rotemdan/ExportCookies) (Chrome/Firefox),
+   - или «Get cookies.txt LOCALLY».
+3. Откройте youtube.com и экспортируйте cookies в файл (например, `cookies.txt`).
+4. В `.env` укажите абсолютный путь к файлу:
 
 ```bash
 COOKIES_FILE=/path/to/cookies.txt
 ```
+
+Перезапустите бота и повторите попытку.
 
 ## Настройки окружения
 
