@@ -229,8 +229,10 @@ def main() -> None:
                 file_path, info = downloader.download(url, selected_format, audio_only=audio_only)
                 with open(file_path, "rb") as handle:
                     if audio_only:
+                        bot.send_chat_action(user_id, "upload_audio")
                         bot.send_audio(user_id, handle, caption=title[:1024])
                     else:
+                        bot.send_chat_action(user_id, "upload_video")
                         bot.send_video(user_id, handle, caption=title[:1024])
                 if status_message_id:
                     try:
@@ -405,6 +407,7 @@ def main() -> None:
         if not subscribed and is_free_limit_reached(message.from_user.id):
             bot.send_message(message.chat.id, format_limit_message())
             return
+        bot.send_chat_action(message.chat.id, "typing")
         try:
             info = downloader.get_info(url)
         except Exception as exc:
