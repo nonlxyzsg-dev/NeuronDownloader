@@ -446,10 +446,10 @@ def main() -> None:
         sent = bot.send_message(
             message.chat.id,
             (
-                f"{note}{title}\n"
-                "Подписка на канал уведомит о новых видео.\n"
-                "Выберите качество или формат:"
+                f"{note}**Нашли видео:** {title}\n"
+                "Выберите качество ниже или нажмите *Максимальное* / *Только звук*."
             ),
+            parse_mode="Markdown",
             reply_markup=markup,
         )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
