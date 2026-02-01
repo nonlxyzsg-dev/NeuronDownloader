@@ -73,12 +73,14 @@ class SubscriptionMonitor:
         try:
             info = self.downloader.get_info(target_url)
             format_id = self.downloader.resolve_format_id(info, resolution)
-            file_path, info = self.downloader.download(target_url, format_id)
-            caption = info.get("description") or ""
-            if caption:
-                self.bot.send_message(user_id, caption[:4000])
+            audio_only = resolution == "audio"
+            file_path, info = self.downloader.download(target_url, format_id, audio_only=audio_only)
+            caption = (info.get("title") or "Видео")[:1024]
             with open(file_path, "rb") as handle:
-                self.bot.send_video(user_id, handle)
+                if audio_only:
+                    self.bot.send_audio(user_id, handle, caption=caption)
+                else:
+                    self.bot.send_video(user_id, handle, caption=caption)
             self.storage.update_last_video(user_id, channel_url, latest_id)
             self.storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
         except Exception as exc:

@@ -127,9 +127,16 @@ class VideoDownloader:
         )
         return sorted_options
 
-    def download(self, url: str, format_id: str | None) -> tuple[str, dict]:
+    def download(
+        self,
+        url: str,
+        format_id: str | None,
+        audio_only: bool = False,
+    ) -> tuple[str, dict]:
         ydl_opts = self._base_opts()
-        if format_id:
+        if audio_only:
+            ydl_opts["format"] = "bestaudio/best"
+        elif format_id:
             ydl_opts["format"] = f"{format_id}+bestaudio/best"
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)

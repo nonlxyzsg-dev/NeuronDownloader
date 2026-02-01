@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 
 from datetime import datetime, timezone
 
@@ -8,6 +10,8 @@ from app.config import (
     ADMIN_IDS,
     BOT_TOKEN,
     DATA_DIR,
+    FREE_DOWNLOAD_LIMIT,
+    FREE_DOWNLOAD_WINDOW_SECONDS,
     MAX_CONCURRENT_DOWNLOADS,
     REQUIRED_CHAT_IDS,
 )
@@ -38,6 +42,16 @@ def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMark
         types.InlineKeyboardButton(
             text="⭐ Подписаться (max)",
             callback_data=f"sub|{token}|best",
+        ),
+    )
+    markup.row(
+        types.InlineKeyboardButton(
+            text="🎧 Только звук",
+            callback_data=f"dl|{token}|audio",
+        ),
+        types.InlineKeyboardButton(
+            text="⭐ Подписаться (звук)",
+            callback_data=f"sub|{token}|audio",
         ),
     )
     return markup
@@ -101,6 +115,8 @@ def main() -> None:
         return True
 
     def is_required_member(user_id: int) -> bool:
+        if is_admin(user_id):
+            return True
         if not REQUIRED_CHAT_IDS:
             return True
         for required_chat in REQUIRED_CHAT_IDS:
@@ -112,25 +128,80 @@ def main() -> None:
                 return False
         return True
 
+    def format_limit_message() -> str:
+        if FREE_DOWNLOAD_WINDOW_SECONDS % 3600 == 0:
+            hours = FREE_DOWNLOAD_WINDOW_SECONDS // 3600
+            period = f"{hours} час(а)" if hours != 1 else "1 час"
+        elif FREE_DOWNLOAD_WINDOW_SECONDS % 60 == 0:
+            minutes = FREE_DOWNLOAD_WINDOW_SECONDS // 60
+            period = f"{minutes} минут"
+        else:
+            period = f"{FREE_DOWNLOAD_WINDOW_SECONDS} секунд"
+        return (
+            f"Доступно {FREE_DOWNLOAD_LIMIT} скачивание(я) за {period}. "
+            "Поддержите разработчика и подпишитесь на наши ресурсы, "
+            "чтобы получить неограниченные загрузки."
+        )
+
+    def is_free_limit_reached(user_id: int) -> bool:
+        if is_required_member(user_id):
+            return False
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        start_ts = now_ts - FREE_DOWNLOAD_WINDOW_SECONDS
+        used = storage.count_free_downloads_since(user_id, start_ts)
+        return used >= FREE_DOWNLOAD_LIMIT
+
     def queue_download(
         user_id: int,
+        chat_id: int,
         url: str,
         selected_format: str | None,
-        description: str,
+        title: str,
+        status_message_id: int | None = None,
+        audio_only: bool = False,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
             try:
-                file_path, info = downloader.download(url, selected_format)
-                if description:
-                    bot.send_message(user_id, description[:4000])
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "⬇️ Скачивание...",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
+                file_path, info = downloader.download(url, selected_format, audio_only=audio_only)
                 with open(file_path, "rb") as handle:
-                    bot.send_video(user_id, handle)
+                    if audio_only:
+                        bot.send_audio(user_id, handle, caption=title[:1024])
+                    else:
+                        bot.send_video(user_id, handle, caption=title[:1024])
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "✅ Отправлено.",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
                 storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
             except Exception as exc:
                 storage.log_download(user_id, "unknown", "failed")
-                bot.send_message(user_id, f"Ошибка загрузки: {exc}")
+                if status_message_id:
+                    try:
+                        bot.edit_message_text(
+                            f"❌ Ошибка загрузки: {exc}",
+                            chat_id,
+                            status_message_id,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    bot.send_message(user_id, f"Ошибка загрузки: {exc}")
 
         download_manager.submit(_job)
 
@@ -143,10 +214,8 @@ def main() -> None:
         bot.send_message(
             message.chat.id,
             (
-                "Привет! Я Нейрон Downloader из экосистемы канала «Банка с нейронами». "
-                "На канале я рассказываю про ИИ технологии простым языком для нетехнической аудитории.\n\n"
-                "Отправьте ссылку на видео YouTube/Instagram/VK или ссылку на канал YouTube. "
-                "Бот предложит варианты качества и скачает видео с описанием."
+                "Привет! Отправьте ссылку на видео YouTube/Instagram/VK или ссылку на канал YouTube. "
+                "Бот предложит варианты качества и скачает видео."
             ),
             reply_markup=build_main_menu(),
         )
@@ -277,19 +346,9 @@ def main() -> None:
             return
         clear_last_inline(message.from_user.id, message.chat.id)
         subscribed = is_required_member(message.from_user.id)
-        if not subscribed:
-            today = datetime.now(timezone.utc).date().isoformat()
-            downloads_today = storage.get_daily_downloads(message.from_user.id, today)
-            if downloads_today >= 1:
-                bot.send_message(
-                    message.chat.id,
-                    (
-                        "Сегодня уже было одно скачивание. "
-                        "Поддержите разработчика и подпишитесь на наши ресурсы, "
-                        "чтобы получить неограниченные загрузки."
-                    ),
-                )
-                return
+        if not subscribed and is_free_limit_reached(message.from_user.id):
+            bot.send_message(message.chat.id, format_limit_message())
+            return
         try:
             info = downloader.get_info(url)
         except Exception as exc:
@@ -306,24 +365,16 @@ def main() -> None:
                 bot.send_message(message.chat.id, f"Не удалось обработать ссылку: {exc}")
             return
         title = info.get("title") or "Видео"
-        description = info.get("description") or ""
         channel_url = info.get("channel_url") or info.get("uploader_url")
-        if not subscribed:
-            today = datetime.now(timezone.utc).date().isoformat()
-            storage.increment_daily_downloads(message.from_user.id, today)
-            bot.send_message(
-                message.chat.id,
-                (
-                    "Я скачаю это видео, но без подписки доступно только одно скачивание в день. "
-                    "Поддержите разработчика и подпишитесь на наши ресурсы для снятия ограничений."
-                ),
-            )
-            queue_download(message.from_user.id, url, None, description)
-            return
-        token = storage.create_request(url, title, description, channel_url)
+        token = storage.create_request(url, title, "", channel_url)
         options = downloader.list_formats(info)
         markup = build_format_keyboard(token, options)
-        sent = bot.send_message(message.chat.id, f"{title}\nВыберите качество:", reply_markup=markup)
+        note = "" if subscribed else f"{format_limit_message()}\n\n"
+        sent = bot.send_message(
+            message.chat.id,
+            f"{note}{title}\nВыберите качество или формат:",
+            reply_markup=markup,
+        )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
 
     @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith("dl|"))
@@ -336,14 +387,29 @@ def main() -> None:
         if request is None:
             bot.answer_callback_query(call.id, "Запрос устарел")
             return
-        url, _, description, _ = request
+        url, title, _, _ = request
+        if not is_required_member(call.from_user.id):
+            if is_free_limit_reached(call.from_user.id):
+                bot.answer_callback_query(call.id, "Лимит на период исчерпан.")
+                return
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            storage.log_free_download(call.from_user.id, now_ts)
         bot.answer_callback_query(call.id, "Загрузка добавлена в очередь.")
-        selected_format = None if format_id == "best" else format_id
-        queue_download(call.from_user.id, url, selected_format, description)
+        selected_format = None if format_id in ("best", "audio") else format_id
+        audio_only = format_id == "audio"
+        queue_download(
+            call.from_user.id,
+            call.message.chat.id,
+            url,
+            selected_format,
+            title,
+            status_message_id=call.message.message_id,
+            audio_only=audio_only,
+        )
         storage.delete_request(token)
         try:
             bot.edit_message_text(
-                "Загрузка добавлена в очередь.",
+                "⏳ Загрузка в очереди...",
                 call.message.chat.id,
                 call.message.message_id,
             )
@@ -452,7 +518,21 @@ def main() -> None:
             bot.send_message(call.message.chat.id, "Подписка удалена.")
         storage.set_last_inline_message_id(call.from_user.id, None)
 
-    bot.infinity_polling()
+    consecutive_failures = 0
+    first_failure_ts: float | None = None
+    while True:
+        try:
+            bot.infinity_polling()
+            consecutive_failures = 0
+            first_failure_ts = None
+        except Exception as exc:
+            consecutive_failures += 1
+            if first_failure_ts is None:
+                first_failure_ts = time.monotonic()
+            elapsed = time.monotonic() - first_failure_ts
+            if consecutive_failures >= 3 or elapsed >= 60:
+                logging.error("Infinity polling exception: %s", exc)
+            time.sleep(5)
 
 
 if __name__ == "__main__":
