@@ -1,9 +1,16 @@
+import logging
 import os
 from dataclasses import dataclass
 
 from yt_dlp import YoutubeDL
 
-from app.config import COOKIES_FILE
+from app.config import (
+    COOKIES_FILE,
+    USER_AGENT,
+    VK_PASSWORD,
+    VK_USERNAME,
+    YOUTUBE_PLAYER_CLIENTS,
+)
 
 @dataclass
 class FormatOption:
@@ -16,14 +23,81 @@ class VideoDownloader:
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
+        self.cookiefile = self._prepare_cookiefile()
+
+    def _prepare_cookiefile(self) -> str | None:
+        if not COOKIES_FILE:
+            return None
+        if not os.path.exists(COOKIES_FILE):
+            logging.warning("Cookie файл не найден: %s", COOKIES_FILE)
+            return None
+
+        sanitized_lines: list[str] = []
+        has_magic = False
+        changed = False
+
+        with open(COOKIES_FILE, "r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.rstrip("\n")
+                if stripped.startswith("# Netscape HTTP Cookie File"):
+                    has_magic = True
+                    continue
+                if stripped.strip().startswith(("#", "$")) or stripped.strip() == "":
+                    sanitized_lines.append(stripped)
+                    continue
+                parts = stripped.split("\t", 6)
+                if len(parts) != 7:
+                    changed = True
+                    continue
+                domain, domain_specified, path, secure, expires, name, value = parts
+                initial_dot = domain.startswith(".")
+                domain_specified_flag = domain_specified.upper() == "TRUE"
+                if initial_dot and not domain_specified_flag:
+                    domain_specified = "TRUE"
+                    changed = True
+                elif not initial_dot and domain_specified_flag:
+                    domain = f".{domain}"
+                    changed = True
+                sanitized_lines.append(
+                    "\t".join([domain, domain_specified, path, secure, expires, name, value])
+                )
+
+        if not has_magic:
+            changed = True
+
+        if not changed:
+            return COOKIES_FILE
+
+        sanitized_path = os.path.join(self.data_dir, "cookies.cleaned.txt")
+        with open(sanitized_path, "w", encoding="utf-8") as handle:
+            handle.write("# Netscape HTTP Cookie File\n")
+            for line in sanitized_lines:
+                handle.write(f"{line}\n")
+        logging.warning("Cookie файл очищен и сохранен в %s", sanitized_path)
+        return sanitized_path
 
     def _base_opts(self, skip_download: bool = False) -> dict:
+        output_template = os.path.join(self.data_dir, "%(title)s.%(ext)s")
         opts: dict = {
+            "format": "bestvideo+bestaudio/best",
             "quiet": True,
             "skip_download": skip_download,
+            "noplaylist": True,
+            "outtmpl": output_template,
+            "user_agent": USER_AGENT,
         }
-        if COOKIES_FILE:
-            opts["cookiefile"] = COOKIES_FILE
+        if VK_USERNAME:
+            opts["username"] = VK_USERNAME
+        if VK_PASSWORD:
+            opts["password"] = VK_PASSWORD
+        if YOUTUBE_PLAYER_CLIENTS:
+            opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": YOUTUBE_PLAYER_CLIENTS,
+                }
+            }
+        if self.cookiefile:
+            opts["cookiefile"] = self.cookiefile
         return opts
 
     def get_info(self, url: str) -> dict:
@@ -54,14 +128,7 @@ class VideoDownloader:
         return sorted_options
 
     def download(self, url: str, format_id: str | None) -> tuple[str, dict]:
-        output_template = os.path.join(self.data_dir, "%(title)s.%(ext)s")
         ydl_opts = self._base_opts()
-        ydl_opts.update(
-            {
-                "outtmpl": output_template,
-                "merge_output_format": "mp4",
-            }
-        )
         if format_id:
             ydl_opts["format"] = f"{format_id}+bestaudio/best"
         with YoutubeDL(ydl_opts) as ydl:
