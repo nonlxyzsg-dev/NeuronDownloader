@@ -10,6 +10,8 @@ from app.config import (
     USER_AGENT,
     VK_PASSWORD,
     VK_USERNAME,
+    YOUTUBE_JS_RUNTIME,
+    YOUTUBE_JS_RUNTIME_PATH,
     YOUTUBE_PLAYER_CLIENTS,
 )
 
@@ -91,12 +93,14 @@ class VideoDownloader:
             opts["username"] = VK_USERNAME
         if VK_PASSWORD:
             opts["password"] = VK_PASSWORD
+        extractor_args = opts.setdefault("extractor_args", {})
+        youtube_args = extractor_args.setdefault("youtube", {})
         if YOUTUBE_PLAYER_CLIENTS:
-            opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": YOUTUBE_PLAYER_CLIENTS,
-                }
-            }
+            youtube_args["player_client"] = YOUTUBE_PLAYER_CLIENTS
+        if YOUTUBE_JS_RUNTIME:
+            youtube_args["js_runtime"] = YOUTUBE_JS_RUNTIME
+        if YOUTUBE_JS_RUNTIME_PATH:
+            youtube_args["js_runtime_path"] = YOUTUBE_JS_RUNTIME_PATH
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         return opts

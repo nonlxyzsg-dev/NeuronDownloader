@@ -23,11 +23,25 @@ FREE_DOWNLOAD_LIMIT = int(os.getenv("FREE_DOWNLOAD_LIMIT", "1"))
 FREE_DOWNLOAD_WINDOW_SECONDS = int(os.getenv("FREE_DOWNLOAD_WINDOW_SECONDS", "86400"))
 VK_USERNAME = os.getenv("VK_USERNAME", "")
 VK_PASSWORD = os.getenv("VK_PASSWORD", "")
+SUPPORTED_YOUTUBE_PLAYER_CLIENTS = [
+    "default",
+    "all",
+    "android",
+    "android_creator",
+    "ios",
+    "web",
+    "web_creator",
+    "mweb",
+    "tv",
+    "tv_embedded",
+]
 YOUTUBE_PLAYER_CLIENTS = [
     value.strip()
     for value in os.getenv("YOUTUBE_PLAYER_CLIENTS", "android,web").split(",")
     if value.strip()
 ]
+YOUTUBE_JS_RUNTIME = os.getenv("YOUTUBE_JS_RUNTIME", "").strip()
+YOUTUBE_JS_RUNTIME_PATH = os.getenv("YOUTUBE_JS_RUNTIME_PATH", "").strip()
 USER_AGENT = os.getenv(
     "USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
