@@ -1,5 +1,6 @@
 import logging
 import os
+import signal
 import time
 
 from datetime import datetime, timezone
@@ -112,6 +113,19 @@ def main() -> None:
     download_manager = DownloadManager(MAX_CONCURRENT_DOWNLOADS)
     monitor = SubscriptionMonitor(bot, storage, downloader, download_manager)
     monitor.start()
+    shutdown_requested = False
+
+    def handle_shutdown(_signum: int, _frame: object | None) -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+        logging.getLogger("TeleBot").setLevel(logging.CRITICAL)
+        try:
+            bot.stop_polling()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 
     def is_admin(user_id: int) -> bool:
         return user_id in ADMIN_IDS
@@ -394,6 +408,20 @@ def main() -> None:
         channel_url = info.get("channel_url") or info.get("uploader_url")
         token = storage.create_request(url, title, "", channel_url)
         options = downloader.list_formats(info)
+        if not options:
+            has_video = any(
+                fmt.get("vcodec") not in (None, "none")
+                for fmt in info.get("formats", [])
+            )
+            if not has_video:
+                bot.send_message(
+                    message.chat.id,
+                    (
+                        "Не удалось получить видеоформаты. "
+                        "Возможно, требуется обновить cookies или настройки клиента."
+                    ),
+                )
+                return
         markup = build_format_keyboard(token, options)
         note = "" if subscribed else f"{format_limit_message()}\n\n"
         sent = bot.send_message(
@@ -615,6 +643,8 @@ def main() -> None:
             bot.infinity_polling()
             consecutive_failures = 0
             first_failure_ts = None
+        except KeyboardInterrupt:
+            break
         except Exception as exc:
             consecutive_failures += 1
             if first_failure_ts is None:
@@ -623,6 +653,8 @@ def main() -> None:
             if consecutive_failures >= 3 or elapsed >= 60:
                 logging.error("Infinity polling exception: %s", exc)
             time.sleep(5)
+        if shutdown_requested:
+            break
 
 
 if __name__ == "__main__":
