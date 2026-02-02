@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import threading
 
 from telebot import TeleBot
@@ -53,14 +54,21 @@ class SubscriptionMonitor:
                 continue
             if not target_url.startswith("http") and "youtube" in channel_url:
                 target_url = f"https://www.youtube.com/watch?v={target_url}"
-            self.download_manager.submit(
-                self._download_and_send,
-                user_id,
-                channel_url,
-                target_url,
-                latest_id,
-                resolution,
-            )
+            try:
+                self.download_manager.submit_user(
+                    user_id,
+                    self._download_and_send,
+                    user_id,
+                    channel_url,
+                    target_url,
+                    latest_id,
+                    resolution,
+                )
+            except queue.Full:
+                logging.warning(
+                    "Queue full, skipping subscription download for user %s",
+                    user_id,
+                )
 
     def _download_and_send(
         self,
