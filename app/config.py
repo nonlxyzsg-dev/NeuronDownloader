@@ -7,6 +7,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "/workspace/NeuronDownloader/data")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "600"))
+CLEANUP_MAX_AGE_SECONDS = int(os.getenv("CLEANUP_MAX_AGE_SECONDS", "18000"))
 COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
 ADMIN_IDS = [
     int(value.strip())

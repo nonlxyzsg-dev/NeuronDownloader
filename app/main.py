@@ -22,6 +22,7 @@ from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
 from app.storage import Storage
 from app.subscriptions import SubscriptionMonitor
+from app.cleanup import DataCleanupMonitor
 
 
 def build_format_keyboard(token: str, options: list) -> types.InlineKeyboardMarkup:
@@ -128,6 +129,8 @@ def main() -> None:
     download_manager = DownloadManager(MAX_CONCURRENT_DOWNLOADS)
     monitor = SubscriptionMonitor(bot, storage, downloader, download_manager)
     monitor.start()
+    cleanup_monitor = DataCleanupMonitor()
+    cleanup_monitor.start()
     shutdown_requested = False
 
     def handle_shutdown(_signum: int, _frame: object | None) -> None:
@@ -138,6 +141,7 @@ def main() -> None:
             bot.stop_polling()
         except Exception:
             pass
+        cleanup_monitor.stop()
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
