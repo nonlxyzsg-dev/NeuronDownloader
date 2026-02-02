@@ -20,6 +20,9 @@ from app.config import (
     REQUIRED_CHAT_IDS,
     ENABLE_REACTIONS,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+    TELEBOT_LOG_LEVEL,
+    TELEGRAM_POLLING_ERROR_DELAY_SECONDS,
+    TELEGRAM_POLLING_DNS_DELAY_SECONDS,
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
@@ -121,11 +124,29 @@ def append_youtube_client_hint(message: str) -> str:
     return f"{message}\n\n{hint}"
 
 
+def format_caption(title: str) -> str:
+    signature = "💾 Нейрон-Downloader @NeuronDownloader_Bot"
+    title = title.strip()
+    if title:
+        caption = f"{title}\n\n{signature}"
+    else:
+        caption = signature
+    if len(caption) <= 1024:
+        return caption
+    allowed_title = max(0, 1024 - len(signature) - 2)
+    trimmed_title = title[:allowed_title].rstrip()
+    if trimmed_title:
+        return f"{trimmed_title}\n\n{signature}"
+    return signature[:1024]
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан")
 
     os.makedirs(DATA_DIR, exist_ok=True)
+    for logger_name in ("TeleBot", "telebot"):
+        logging.getLogger(logger_name).setLevel(TELEBOT_LOG_LEVEL)
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()
     downloader = VideoDownloader(DATA_DIR)
@@ -305,7 +326,7 @@ def main() -> None:
                         bot.send_audio(
                             user_id,
                             handle,
-                            caption=title[:1024],
+                            caption=format_caption(title),
                             timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                         )
                         upload_duration = time.monotonic() - upload_start
@@ -327,7 +348,7 @@ def main() -> None:
                         bot.send_video(
                             user_id,
                             handle,
-                            caption=title[:1024],
+                            caption=format_caption(title),
                             timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                             supports_streaming=True,
                         )
@@ -837,6 +858,18 @@ def main() -> None:
 
     consecutive_failures = 0
     first_failure_ts: float | None = None
+
+    def is_dns_error(exc: Exception) -> bool:
+        error_text = repr(exc)
+        return any(
+            token in error_text
+            for token in (
+                "NameResolutionError",
+                "Temporary failure in name resolution",
+                "Failed to resolve",
+            )
+        )
+
     while True:
         try:
             bot.infinity_polling()
@@ -849,9 +882,18 @@ def main() -> None:
             if first_failure_ts is None:
                 first_failure_ts = time.monotonic()
             elapsed = time.monotonic() - first_failure_ts
+            delay = TELEGRAM_POLLING_ERROR_DELAY_SECONDS
+            if is_dns_error(exc):
+                delay = max(delay, TELEGRAM_POLLING_DNS_DELAY_SECONDS)
+                if consecutive_failures == 1:
+                    logging.warning(
+                        "Не удалось разрешить api.telegram.org. "
+                        "Проверьте доступ к интернету/DNS. Повтор через %s сек.",
+                        delay,
+                    )
             if consecutive_failures >= 3 or elapsed >= 60:
                 logging.error("Infinity polling exception: %s", exc)
-            time.sleep(5)
+            time.sleep(delay)
         if shutdown_requested:
             break
 
