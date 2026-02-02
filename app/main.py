@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import signal
 import time
 
@@ -14,6 +15,8 @@ from app.config import (
     FREE_DOWNLOAD_LIMIT,
     FREE_DOWNLOAD_WINDOW_SECONDS,
     MAX_CONCURRENT_DOWNLOADS,
+    MAX_QUEUE_SIZE,
+    MAX_ACTIVE_TASKS_PER_USER,
     REQUIRED_CHAT_IDS,
     ENABLE_REACTIONS,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
@@ -126,7 +129,11 @@ def main() -> None:
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()
     downloader = VideoDownloader(DATA_DIR)
-    download_manager = DownloadManager(MAX_CONCURRENT_DOWNLOADS)
+    download_manager = DownloadManager(
+        MAX_CONCURRENT_DOWNLOADS,
+        MAX_QUEUE_SIZE,
+        MAX_ACTIVE_TASKS_PER_USER,
+    )
     monitor = SubscriptionMonitor(bot, storage, downloader, download_manager)
     monitor.start()
     cleanup_monitor = DataCleanupMonitor()
@@ -360,7 +367,10 @@ def main() -> None:
                 else:
                     bot.send_message(user_id, error_message)
 
-        download_manager.submit(_job)
+        try:
+            download_manager.submit_user(user_id, _job)
+        except queue.Full:
+            bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
 
     @bot.message_handler(commands=["start", "help"])
     def send_welcome(message: types.Message) -> None:
@@ -611,6 +621,23 @@ def main() -> None:
                 return
             now_ts = int(datetime.now(timezone.utc).timestamp())
             storage.log_free_download(call.from_user.id, now_ts)
+        if (
+            MAX_ACTIVE_TASKS_PER_USER > 0
+            and download_manager.active_count(call.from_user.id) >= MAX_ACTIVE_TASKS_PER_USER
+        ):
+            bot.answer_callback_query(
+                call.id,
+                "Достигнут лимит активных загрузок. Попробуйте позже.",
+            )
+            return
+        queue_length = download_manager.queued_count()
+        if queue_length >= download_manager.max_queue_size():
+            bot.answer_callback_query(call.id, "Очередь переполнена. Попробуйте позже.")
+            return
+        bot.send_message(
+            call.message.chat.id,
+            f"Ваш запрос №{queue_length + 1} в очереди",
+        )
         bot.answer_callback_query(call.id, "Загрузка добавлена в очередь.")
         selected_format = None if format_id in ("best", "audio") else format_id
         audio_only = format_id == "audio"
