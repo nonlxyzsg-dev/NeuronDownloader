@@ -6,6 +6,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "/workspace/NeuronDownloader/data")
+DB_FILENAME = os.getenv("DB_FILENAME", "bot.db")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
 CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "600"))
 CLEANUP_MAX_AGE_SECONDS = int(os.getenv("CLEANUP_MAX_AGE_SECONDS", "18000"))

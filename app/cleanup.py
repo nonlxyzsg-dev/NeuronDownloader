@@ -3,7 +3,7 @@ import os
 import threading
 import time
 
-from app.config import CLEANUP_INTERVAL_SECONDS, CLEANUP_MAX_AGE_SECONDS, DATA_DIR
+from app.config import CLEANUP_INTERVAL_SECONDS, CLEANUP_MAX_AGE_SECONDS, DATA_DIR, DB_FILENAME
 
 
 class DataCleanupMonitor:
@@ -27,6 +27,8 @@ class DataCleanupMonitor:
         cutoff = now - CLEANUP_MAX_AGE_SECONDS
         for root, _dirs, files in os.walk(DATA_DIR):
             for filename in files:
+                if filename == DB_FILENAME:
+                    continue
                 path = os.path.join(root, filename)
                 try:
                     if os.path.getmtime(path) < cutoff:
