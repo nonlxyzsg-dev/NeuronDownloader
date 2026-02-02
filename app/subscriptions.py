@@ -1,3 +1,5 @@
+import logging
+import os
 import threading
 
 from telebot import TeleBot
@@ -81,6 +83,13 @@ class SubscriptionMonitor:
                     self.bot.send_audio(user_id, handle, caption=caption)
                 else:
                     self.bot.send_video(user_id, handle, caption=caption)
+            try:
+                os.remove(file_path)
+            except OSError:
+                logging.exception(
+                    "Failed to удалить файл подписки %s после отправки",
+                    file_path,
+                )
             self.storage.update_last_video(user_id, channel_url, latest_id)
             self.storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
         except Exception as exc:
