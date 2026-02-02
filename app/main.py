@@ -124,6 +124,22 @@ def append_youtube_client_hint(message: str) -> str:
     return f"{message}\n\n{hint}"
 
 
+def format_caption(title: str) -> str:
+    signature = "💾 Нейрон-Downloader @NeuronDownloader_Bot"
+    title = title.strip()
+    if title:
+        caption = f"{title}\n\n{signature}"
+    else:
+        caption = signature
+    if len(caption) <= 1024:
+        return caption
+    allowed_title = max(0, 1024 - len(signature) - 2)
+    trimmed_title = title[:allowed_title].rstrip()
+    if trimmed_title:
+        return f"{trimmed_title}\n\n{signature}"
+    return signature[:1024]
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан")
@@ -310,7 +326,7 @@ def main() -> None:
                         bot.send_audio(
                             user_id,
                             handle,
-                            caption=title[:1024],
+                            caption=format_caption(title),
                             timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                         )
                         upload_duration = time.monotonic() - upload_start
@@ -332,7 +348,7 @@ def main() -> None:
                         bot.send_video(
                             user_id,
                             handle,
-                            caption=title[:1024],
+                            caption=format_caption(title),
                             timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                             supports_streaming=True,
                         )
