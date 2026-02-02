@@ -303,6 +303,13 @@ def main() -> None:
                             user_id,
                             upload_duration,
                         )
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            logging.exception(
+                                "Failed to удалить аудиофайл %s после отправки",
+                                file_path,
+                            )
                     else:
                         bot.send_chat_action(user_id, "upload_video")
                         upload_start = time.monotonic()
@@ -319,6 +326,13 @@ def main() -> None:
                             user_id,
                             upload_duration,
                         )
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            logging.exception(
+                                "Failed to удалить видеофайл %s после отправки",
+                                file_path,
+                            )
                 if progress_message_id:
                     try:
                         bot.delete_message(chat_id, progress_message_id)
