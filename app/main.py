@@ -20,6 +20,9 @@ from app.config import (
     REQUIRED_CHAT_IDS,
     ENABLE_REACTIONS,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+    TELEBOT_LOG_LEVEL,
+    TELEGRAM_POLLING_ERROR_DELAY_SECONDS,
+    TELEGRAM_POLLING_DNS_DELAY_SECONDS,
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
@@ -126,6 +129,8 @@ def main() -> None:
         raise RuntimeError("BOT_TOKEN не задан")
 
     os.makedirs(DATA_DIR, exist_ok=True)
+    for logger_name in ("TeleBot", "telebot"):
+        logging.getLogger(logger_name).setLevel(TELEBOT_LOG_LEVEL)
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()
     downloader = VideoDownloader(DATA_DIR)
@@ -837,6 +842,18 @@ def main() -> None:
 
     consecutive_failures = 0
     first_failure_ts: float | None = None
+
+    def is_dns_error(exc: Exception) -> bool:
+        error_text = repr(exc)
+        return any(
+            token in error_text
+            for token in (
+                "NameResolutionError",
+                "Temporary failure in name resolution",
+                "Failed to resolve",
+            )
+        )
+
     while True:
         try:
             bot.infinity_polling()
@@ -849,9 +866,18 @@ def main() -> None:
             if first_failure_ts is None:
                 first_failure_ts = time.monotonic()
             elapsed = time.monotonic() - first_failure_ts
+            delay = TELEGRAM_POLLING_ERROR_DELAY_SECONDS
+            if is_dns_error(exc):
+                delay = max(delay, TELEGRAM_POLLING_DNS_DELAY_SECONDS)
+                if consecutive_failures == 1:
+                    logging.warning(
+                        "Не удалось разрешить api.telegram.org. "
+                        "Проверьте доступ к интернету/DNS. Повтор через %s сек.",
+                        delay,
+                    )
             if consecutive_failures >= 3 or elapsed >= 60:
                 logging.error("Infinity polling exception: %s", exc)
-            time.sleep(5)
+            time.sleep(delay)
         if shutdown_requested:
             break
 

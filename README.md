@@ -135,3 +135,6 @@ COOKIES_FILE=/path/to/cookies.txt
   `web`, `web_creator`, `mweb`, `tv`, `tv_embedded`. Если возникают ошибки, попробуйте убрать `android_creator`.
 - `YOUTUBE_JS_RUNTIME` — имя JS-рантайма для обработки подписи (например, `node`, `deno`, `bun`).
 - `YOUTUBE_JS_RUNTIME_PATH` — путь к бинарнику JS-рантайма (например, `/usr/bin/node`).
+- `TELEBOT_LOG_LEVEL` — уровень логирования для `TeleBot`/`telebot` (по умолчанию `CRITICAL`).
+- `TELEGRAM_POLLING_ERROR_DELAY_SECONDS` — базовая пауза перед повтором polling при ошибках (секунды).
+- `TELEGRAM_POLLING_DNS_DELAY_SECONDS` — пауза перед повтором при проблемах с DNS (секунды).
