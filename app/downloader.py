@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
@@ -92,13 +93,14 @@ class VideoDownloader:
         return sanitized_path
 
     def _base_opts(self, skip_download: bool = False) -> dict:
-        output_template = os.path.join(self.data_dir, "%(title)s.%(ext)s")
+        output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
             "format": "bestvideo+bestaudio/best",
             "quiet": True,
             "skip_download": skip_download,
             "noplaylist": True,
             "outtmpl": output_template,
+            "restrictfilenames": True,
             "user_agent": USER_AGENT,
             "logger": YtDlpLogger(),
         }
@@ -201,7 +203,90 @@ class VideoDownloader:
         file_path = ydl.prepare_filename(info)
         if info.get("_filename"):
             file_path = info["_filename"]
-        return file_path, info
+        safe_path = self._rename_to_safe_filename(file_path, info)
+        return safe_path, info
+
+    def get_direct_url(
+        self,
+        info: dict,
+        format_id: str | None,
+        audio_only: bool = False,
+    ) -> tuple[str | None, int | None]:
+        formats = info.get("formats") or []
+        candidates = []
+        if audio_only:
+            candidates = [
+                fmt
+                for fmt in formats
+                if fmt.get("acodec") not in (None, "none")
+                and fmt.get("vcodec") in (None, "none")
+            ]
+        else:
+            candidates = [
+                fmt
+                for fmt in formats
+                if fmt.get("vcodec") not in (None, "none")
+                and fmt.get("acodec") not in (None, "none")
+            ]
+        candidates = [
+            fmt
+            for fmt in candidates
+            if fmt.get("url")
+            and (fmt.get("protocol") or "").startswith("http")
+            and fmt.get("protocol") not in ("m3u8", "m3u8_native", "dash")
+        ]
+        if format_id:
+            exact = [fmt for fmt in candidates if str(fmt.get("format_id")) == format_id]
+            if exact:
+                fmt = max(exact, key=lambda item: float(item.get("tbr") or 0))
+                return fmt.get("url"), fmt.get("filesize") or fmt.get("filesize_approx")
+            requested = next(
+                (fmt for fmt in formats if str(fmt.get("format_id")) == format_id),
+                None,
+            )
+            target_height = requested.get("height") if requested else None
+            if target_height:
+                by_height = [fmt for fmt in candidates if fmt.get("height") == target_height]
+                if by_height:
+                    fmt = max(by_height, key=lambda item: float(item.get("tbr") or 0))
+                    return (
+                        fmt.get("url"),
+                        fmt.get("filesize") or fmt.get("filesize_approx"),
+                    )
+        if not candidates:
+            return None, None
+        fmt = max(candidates, key=lambda item: float(item.get("tbr") or 0))
+        return fmt.get("url"), fmt.get("filesize") or fmt.get("filesize_approx")
+
+    def _rename_to_safe_filename(self, file_path: str, info: dict) -> str:
+        base = info.get("id") or info.get("display_id") or info.get("title") or "video"
+        timestamp = info.get("timestamp") or int(time.time())
+        base = f"{base}_{timestamp}"
+        safe_base = re.sub(r"[^0-9A-Za-z]+", "_", base).strip("_")
+        if not safe_base:
+            safe_base = "video"
+        ext = info.get("ext") or os.path.splitext(file_path)[1].lstrip(".")
+        if ext:
+            candidate = os.path.join(self.data_dir, f"{safe_base}.{ext}")
+        else:
+            candidate = os.path.join(self.data_dir, safe_base)
+        if candidate == file_path:
+            return file_path
+        unique_path = candidate
+        counter = 2
+        while os.path.exists(unique_path):
+            suffix = f"_{counter}"
+            if ext:
+                unique_path = os.path.join(self.data_dir, f"{safe_base}{suffix}.{ext}")
+            else:
+                unique_path = os.path.join(self.data_dir, f"{safe_base}{suffix}")
+            counter += 1
+        try:
+            os.replace(file_path, unique_path)
+        except OSError:
+            logging.exception("Failed to rename file %s to %s", file_path, unique_path)
+            return file_path
+        return unique_path
 
     def resolve_format_id(self, info: dict, resolution: str | None) -> str | None:
         if not resolution or resolution == "best":

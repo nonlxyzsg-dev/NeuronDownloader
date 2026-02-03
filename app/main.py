@@ -261,13 +261,14 @@ def main() -> None:
         selected_format: str | None,
         title: str,
         status_message_id: int | None = None,
+        queue_message_id: int | None = None,
         audio_only: bool = False,
         reaction_message_id: int | None = None,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
-            progress_message_id: int | None = None
+            progress_message_id: int | None = status_message_id
             last_update = 0.0
             last_text = ""
             download_started = time.monotonic()
@@ -330,11 +331,38 @@ def main() -> None:
                         bot.delete_message(chat_id, reaction_message_id)
                     except Exception:
                         pass
+                if queue_message_id:
+                    try:
+                        bot.delete_message(chat_id, queue_message_id)
+                    except Exception:
+                        pass
+                if progress_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "⬇️ Скачивание: 0.0% • 0 Б/с",
+                            chat_id,
+                            progress_message_id,
+                        )
+                    except Exception:
+                        progress_message_id = None
+                if not progress_message_id:
+                    try:
+                        sent = bot.send_message(chat_id, "⬇️ Скачивание: 0.0% • 0 Б/с")
+                        progress_message_id = sent.message_id
+                    except Exception:
+                        progress_message_id = None
+                direct_info = None
+                direct_url = None
+                direct_size = None
                 try:
-                    sent = bot.send_message(chat_id, "⬇️ Скачивание: 0.0% • 0 Б/с")
-                    progress_message_id = sent.message_id
+                    direct_info = downloader.get_info(url)
+                    direct_url, direct_size = downloader.get_direct_url(
+                        direct_info,
+                        selected_format,
+                        audio_only=audio_only,
+                    )
                 except Exception:
-                    progress_message_id = None
+                    logging.exception("Failed to resolve direct URL for %s", url)
                 queue_delay = time.monotonic() - download_started
                 logging.info(
                     "Download started after queue delay %.2f seconds (user=%s, url=%s)",
@@ -342,6 +370,68 @@ def main() -> None:
                     user_id,
                     url,
                 )
+                if direct_url:
+                    if progress_message_id:
+                        try:
+                            bot.edit_message_text(
+                                "🚀 Отправляем напрямую в Telegram…",
+                                chat_id,
+                                progress_message_id,
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        bot.send_chat_action(
+                            user_id,
+                            "upload_audio" if audio_only else "upload_video",
+                        )
+                        upload_start = time.monotonic()
+                        if audio_only:
+                            bot.send_audio(
+                                user_id,
+                                direct_url,
+                                caption=format_caption(title),
+                                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                            )
+                        else:
+                            bot.send_video(
+                                user_id,
+                                direct_url,
+                                caption=format_caption(title),
+                                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                                supports_streaming=True,
+                            )
+                        upload_duration = time.monotonic() - upload_start
+                        upload_speed = (
+                            format_speed(direct_size / upload_duration)
+                            if direct_size and upload_duration > 0
+                            else "unknown"
+                        )
+                        logging.info(
+                            "%s uploaded to user %s via URL in %.2f seconds (size=%s, speed=%s)",
+                            "Audio" if audio_only else "Video",
+                            user_id,
+                            upload_duration,
+                            format_bytes(direct_size) if direct_size else "unknown",
+                            upload_speed,
+                        )
+                        if progress_message_id:
+                            try:
+                                bot.delete_message(chat_id, progress_message_id)
+                            except Exception:
+                                pass
+                        storage.log_download(
+                            user_id,
+                            (direct_info or {}).get("extractor_key", "unknown"),
+                            "success",
+                        )
+                        return
+                    except Exception:
+                        logging.exception(
+                            "Direct URL upload failed, falling back to download (user=%s, url=%s)",
+                            user_id,
+                            url,
+                        )
                 file_path, info = downloader.download(
                     url,
                     selected_format,
@@ -722,7 +812,7 @@ def main() -> None:
         if queue_length >= download_manager.max_queue_size():
             bot.answer_callback_query(call.id, "Очередь переполнена. Попробуйте позже.")
             return
-        bot.send_message(
+        queue_message = bot.send_message(
             call.message.chat.id,
             f"Ваш запрос №{queue_length + 1} в очереди",
         )
@@ -736,6 +826,7 @@ def main() -> None:
             selected_format,
             title,
             status_message_id=call.message.message_id,
+            queue_message_id=queue_message.message_id,
             audio_only=audio_only,
             reaction_message_id=reaction_message_id,
         )
