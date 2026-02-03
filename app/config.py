@@ -54,7 +54,7 @@ SUPPORTED_YOUTUBE_PLAYER_CLIENTS = [
 YOUTUBE_PLAYER_CLIENTS = [
     value.strip()
     for value in os.getenv("YOUTUBE_PLAYER_CLIENTS", "android,web").split(",")
-    if value.strip()
+    if value.strip() and value.strip() in SUPPORTED_YOUTUBE_PLAYER_CLIENTS
 ]
 YOUTUBE_JS_RUNTIME = os.getenv("YOUTUBE_JS_RUNTIME", "").strip()
 YOUTUBE_JS_RUNTIME_PATH = os.getenv("YOUTUBE_JS_RUNTIME_PATH", "").strip()
