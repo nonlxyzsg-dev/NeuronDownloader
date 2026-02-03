@@ -357,6 +357,15 @@ def main() -> None:
                     file_path,
                     url,
                 )
+                if progress_message_id:
+                    try:
+                        bot.edit_message_text(
+                            "✅ Скачано. Отправляем в Telegram…",
+                            chat_id,
+                            progress_message_id,
+                        )
+                    except Exception:
+                        pass
                 with open(file_path, "rb") as handle:
                     if audio_only:
                         bot.send_chat_action(user_id, "upload_audio")
