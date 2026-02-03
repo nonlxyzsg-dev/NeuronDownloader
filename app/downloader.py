@@ -16,6 +16,17 @@ from app.config import (
     YOUTUBE_PLAYER_CLIENTS,
 )
 
+
+class YtDlpLogger:
+    def debug(self, message: str) -> None:
+        logging.debug("yt-dlp: %s", message)
+
+    def warning(self, message: str) -> None:
+        logging.warning("yt-dlp: %s", message)
+
+    def error(self, message: str) -> None:
+        logging.error("yt-dlp: %s", message)
+
 @dataclass
 class FormatOption:
     label: str
@@ -89,6 +100,7 @@ class VideoDownloader:
             "noplaylist": True,
             "outtmpl": output_template,
             "user_agent": USER_AGENT,
+            "logger": YtDlpLogger(),
         }
         if VK_USERNAME:
             opts["username"] = VK_USERNAME
@@ -104,6 +116,14 @@ class VideoDownloader:
             youtube_args["js_runtime_path"] = YOUTUBE_JS_RUNTIME_PATH
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
+        logging.debug(
+            "yt-dlp options prepared: skip_download=%s format=%s player_clients=%s js_runtime=%s js_runtime_path=%s",
+            skip_download,
+            opts.get("format"),
+            YOUTUBE_PLAYER_CLIENTS or [],
+            YOUTUBE_JS_RUNTIME or "default",
+            YOUTUBE_JS_RUNTIME_PATH or "default",
+        )
         return opts
 
     def get_info(self, url: str) -> dict:
