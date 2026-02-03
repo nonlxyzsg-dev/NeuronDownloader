@@ -206,6 +206,58 @@ class VideoDownloader:
         safe_path = self._rename_to_safe_filename(file_path, info)
         return safe_path, info
 
+    def get_direct_url(
+        self,
+        info: dict,
+        format_id: str | None,
+        audio_only: bool = False,
+    ) -> tuple[str | None, int | None]:
+        formats = info.get("formats") or []
+        candidates = []
+        if audio_only:
+            candidates = [
+                fmt
+                for fmt in formats
+                if fmt.get("acodec") not in (None, "none")
+                and fmt.get("vcodec") in (None, "none")
+            ]
+        else:
+            candidates = [
+                fmt
+                for fmt in formats
+                if fmt.get("vcodec") not in (None, "none")
+                and fmt.get("acodec") not in (None, "none")
+            ]
+        candidates = [
+            fmt
+            for fmt in candidates
+            if fmt.get("url")
+            and (fmt.get("protocol") or "").startswith("http")
+            and fmt.get("protocol") not in ("m3u8", "m3u8_native", "dash")
+        ]
+        if format_id:
+            exact = [fmt for fmt in candidates if str(fmt.get("format_id")) == format_id]
+            if exact:
+                fmt = max(exact, key=lambda item: float(item.get("tbr") or 0))
+                return fmt.get("url"), fmt.get("filesize") or fmt.get("filesize_approx")
+            requested = next(
+                (fmt for fmt in formats if str(fmt.get("format_id")) == format_id),
+                None,
+            )
+            target_height = requested.get("height") if requested else None
+            if target_height:
+                by_height = [fmt for fmt in candidates if fmt.get("height") == target_height]
+                if by_height:
+                    fmt = max(by_height, key=lambda item: float(item.get("tbr") or 0))
+                    return (
+                        fmt.get("url"),
+                        fmt.get("filesize") or fmt.get("filesize_approx"),
+                    )
+        if not candidates:
+            return None, None
+        fmt = max(candidates, key=lambda item: float(item.get("tbr") or 0))
+        return fmt.get("url"), fmt.get("filesize") or fmt.get("filesize_approx")
+
     def _rename_to_safe_filename(self, file_path: str, info: dict) -> str:
         base = info.get("id") or info.get("display_id") or info.get("title") or "video"
         timestamp = info.get("timestamp") or int(time.time())

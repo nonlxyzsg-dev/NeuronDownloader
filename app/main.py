@@ -351,6 +351,18 @@ def main() -> None:
                         progress_message_id = sent.message_id
                     except Exception:
                         progress_message_id = None
+                direct_info = None
+                direct_url = None
+                direct_size = None
+                try:
+                    direct_info = downloader.get_info(url)
+                    direct_url, direct_size = downloader.get_direct_url(
+                        direct_info,
+                        selected_format,
+                        audio_only=audio_only,
+                    )
+                except Exception:
+                    logging.exception("Failed to resolve direct URL for %s", url)
                 queue_delay = time.monotonic() - download_started
                 logging.info(
                     "Download started after queue delay %.2f seconds (user=%s, url=%s)",
@@ -358,6 +370,68 @@ def main() -> None:
                     user_id,
                     url,
                 )
+                if direct_url:
+                    if progress_message_id:
+                        try:
+                            bot.edit_message_text(
+                                "🚀 Отправляем напрямую в Telegram…",
+                                chat_id,
+                                progress_message_id,
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        bot.send_chat_action(
+                            user_id,
+                            "upload_audio" if audio_only else "upload_video",
+                        )
+                        upload_start = time.monotonic()
+                        if audio_only:
+                            bot.send_audio(
+                                user_id,
+                                direct_url,
+                                caption=format_caption(title),
+                                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                            )
+                        else:
+                            bot.send_video(
+                                user_id,
+                                direct_url,
+                                caption=format_caption(title),
+                                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                                supports_streaming=True,
+                            )
+                        upload_duration = time.monotonic() - upload_start
+                        upload_speed = (
+                            format_speed(direct_size / upload_duration)
+                            if direct_size and upload_duration > 0
+                            else "unknown"
+                        )
+                        logging.info(
+                            "%s uploaded to user %s via URL in %.2f seconds (size=%s, speed=%s)",
+                            "Audio" if audio_only else "Video",
+                            user_id,
+                            upload_duration,
+                            format_bytes(direct_size) if direct_size else "unknown",
+                            upload_speed,
+                        )
+                        if progress_message_id:
+                            try:
+                                bot.delete_message(chat_id, progress_message_id)
+                            except Exception:
+                                pass
+                        storage.log_download(
+                            user_id,
+                            (direct_info or {}).get("extractor_key", "unknown"),
+                            "success",
+                        )
+                        return
+                    except Exception:
+                        logging.exception(
+                            "Direct URL upload failed, falling back to download (user=%s, url=%s)",
+                            user_id,
+                            url,
+                        )
                 file_path, info = downloader.download(
                     url,
                     selected_format,
