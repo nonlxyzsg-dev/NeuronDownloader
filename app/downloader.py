@@ -103,6 +103,8 @@ class VideoDownloader:
             "restrictfilenames": True,
             "user_agent": USER_AGENT,
             "logger": YtDlpLogger(),
+            # Включаем автоматическую загрузку EJS скриптов с GitHub для решения YouTube challenges
+            "remote_components": ["ejs:github"],
         }
         if VK_USERNAME:
             opts["username"] = VK_USERNAME

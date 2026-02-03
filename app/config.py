@@ -43,12 +43,16 @@ SUPPORTED_YOUTUBE_PLAYER_CLIENTS = [
     "default",
     "all",
     "android",
-    "android_creator",
+    "android_vr",
     "ios",
     "web",
+    "web_safari",
+    "web_embedded",
+    "web_music",
     "web_creator",
     "mweb",
     "tv",
+    "tv_simply",
     "tv_embedded",
 ]
 YOUTUBE_PLAYER_CLIENTS = [

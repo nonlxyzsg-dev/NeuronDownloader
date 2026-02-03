@@ -2,6 +2,7 @@ import logging
 import os
 import queue
 import signal
+import sys
 import time
 
 from datetime import datetime, timezone
@@ -163,13 +164,33 @@ def main() -> None:
 
     def handle_shutdown(_signum: int, _frame: object | None) -> None:
         nonlocal shutdown_requested
+        if shutdown_requested:
+            # Повторный Ctrl+C - принудительный выход
+            logging.warning("Принудительное завершение...")
+            sys.exit(1)
         shutdown_requested = True
+        logging.info("Получен сигнал завершения, останавливаем все компоненты...")
         logging.getLogger("TeleBot").setLevel(logging.CRITICAL)
         try:
+            logging.debug("Останавливаем bot polling...")
             bot.stop_polling()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug("Ошибка при остановке bot polling: %s", e)
+        logging.debug("Останавливаем subscription monitor...")
+        monitor.stop()
+        logging.debug("Останавливаем download manager...")
+        download_manager.shutdown()
+        logging.debug("Останавливаем cleanup monitor...")
         cleanup_monitor.stop()
+        logging.info("Все компоненты остановлены")
+        # Принудительный выход через короткое время, если основной поток не завершился
+        import threading
+        def force_exit():
+            time.sleep(3)
+            if shutdown_requested:
+                logging.warning("Основной поток не завершился вовремя, принудительный выход")
+                os._exit(0)
+        threading.Thread(target=force_exit, daemon=True).start()
 
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
@@ -268,6 +289,9 @@ def main() -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
                 return
+            if shutdown_requested:
+                logging.info("Пропускаем загрузку из-за завершения работы")
+                return
             progress_message_id: int | None = status_message_id
             last_update = 0.0
             last_text = ""
@@ -276,6 +300,9 @@ def main() -> None:
 
             def progress_hook(data: dict) -> None:
                 nonlocal last_update, last_text, logged_missing_total
+                # Прерываем загрузку при завершении работы
+                if shutdown_requested:
+                    raise KeyboardInterrupt("Загрузка прервана из-за завершения работы")
                 if not progress_message_id:
                     return
                 if data.get("status") != "downloading":
@@ -1029,13 +1056,20 @@ def main() -> None:
         )
 
     while True:
+        if shutdown_requested:
+            logging.debug("Выход из основного цикла по флагу shutdown_requested")
+            break
         try:
             bot.infinity_polling()
             consecutive_failures = 0
             first_failure_ts = None
         except KeyboardInterrupt:
+            logging.debug("Получен KeyboardInterrupt в основном цикле")
             break
         except Exception as exc:
+            if shutdown_requested:
+                logging.debug("Выход из основного цикла после исключения (shutdown_requested=True)")
+                break
             consecutive_failures += 1
             if first_failure_ts is None:
                 first_failure_ts = time.monotonic()
@@ -1052,8 +1086,8 @@ def main() -> None:
             if consecutive_failures >= 3 or elapsed >= 60:
                 logging.error("Infinity polling exception: %s", exc)
             time.sleep(delay)
-        if shutdown_requested:
-            break
+    
+    logging.info("Завершение работы бота...")
 
 
 if __name__ == "__main__":

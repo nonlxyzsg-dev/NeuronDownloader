@@ -12,48 +12,105 @@
 - Админка: статистика, список пользователей, блокировка.
 - Контроль доступа: можно требовать подписку на обязательные чаты/каналы.
 
-## Быстрый старт (без Docker)
+## Требования
 
-**Команда для запуска** (из корня проекта, с активированным venv или через pipenv):
+- Python 3.12 или выше
+- Node.js 18.x или выше (для корректной работы yt-dlp с YouTube)
+- pipenv (рекомендуется) или venv
+
+## Установка
+
+### Шаг 1: Установка системных зависимостей
+
+Установите Node.js для поддержки JavaScript runtime в yt-dlp:
 
 ```bash
+sudo apt update && sudo apt install nodejs
+```
+
+Проверьте установку:
+
+```bash
+node --version  # Должно показать версию 18.x или выше
+```
+
+### Шаг 2: Установка pipenv (если не установлен)
+
+```bash
+pip install --user pipenv
+```
+
+### Шаг 3: Клонирование и настройка проекта
+
+```bash
+# Перейдите в директорию проекта
+cd /path/to/NeuronDownloader
+
+# Установите зависимости через pipenv (автоматически создаст виртуальное окружение)
+pipenv install
+
+# Проверьте версию yt-dlp
+pipenv run yt-dlp --version  # Должно показать 2026.1.31 или новее
+```
+
+### Шаг 4: Настройка окружения
+
+Скопируйте файл с примером настроек и заполните необходимые параметры:
+
+```bash
+cp .env.example .env
+```
+
+Обязательно укажите в `.env`:
+- `BOT_TOKEN` — токен вашего Telegram-бота (получить у [@BotFather](https://t.me/BotFather))
+- `ADMIN_IDS` — ваш Telegram ID (узнать у [@userinfobot](https://t.me/userinfobot))
+
+### Шаг 5: Запуск бота
+
+**Вариант 1: Через pipenv run (рекомендуется)**
+
+```bash
+pipenv run python -m app.main
+```
+
+**Вариант 2: С активацией виртуального окружения**
+
+```bash
+pipenv shell
 python -m app.main
 ```
 
-Через pipenv: `pipenv run python -m app.main`. Модуль указывается без `.py`.
+Для выхода из виртуального окружения используйте команду `exit`.
 
-### Вариант 1: pipenv
+### Альтернативный способ: установка через venv
 
-1. Установите pipenv (если ещё не установлен):
-   ```bash
-   pip install pipenv
-   ```
-2. Создайте окружение и установите зависимости:
-   ```bash
-   pipenv install -r requirements.txt
-   ```
-3. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
-4. Запустите бота:
-   ```bash
-   pipenv run python -m app.main
-   ```
+Если вы предпочитаете использовать стандартный venv вместо pipenv:
 
-### Вариант 2: venv
+```bash
+# Создайте виртуальное окружение
+python3 -m venv .venv
 
-1. Создайте виртуальное окружение и активируйте его:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   ```
-2. Установите зависимости:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
-4. Запустите бота:
-   ```bash
-   python -m app.main
-   ```
+# Активируйте его
+source .venv/bin/activate  # Linux/macOS
+# или
+.venv\Scripts\activate  # Windows
+
+# Установите зависимости
+pip install -r requirements.txt
+
+# Запустите бота
+python -m app.main
+```
+
+### Проверка установки
+
+После запуска бот должен вывести сообщение:
+
+```
+INFO | Бот запущен. Ожидание сообщений...
+```
+
+Отправьте боту команду `/start` в Telegram — если всё настроено правильно, бот ответит приветственным сообщением.
 
 ## Примеры взаимодействия
 
@@ -99,10 +156,34 @@ python -m app.main
 
 Бот хранит подписки в SQLite (`DATA_DIR/bot.db`). Проверка новых публикаций происходит каждые `POLL_INTERVAL_SECONDS`.
 
+## Обновление зависимостей
+
+Для обновления yt-dlp до последней версии:
+
+```bash
+# Через pipenv
+pipenv update yt-dlp
+
+# Или обновить все пакеты
+pipenv update
+
+# Проверить установленную версию
+pipenv run yt-dlp --version
+```
+
+Через venv:
+
+```bash
+source .venv/bin/activate
+pip install --upgrade yt-dlp
+yt-dlp --version
+```
+
 ## Примечания
 
-- Для работы с Instagram и VK требуется актуальная версия `yt-dlp` и доступ к ресурсам. Для закрытых страниц/видео используйте cookies.
+- Для работы с Instagram и VK требуется актуальная версия `yt-dlp` (2026.1.31 или новее) и доступ к ресурсам. Для закрытых страниц/видео используйте cookies.
 - Для частных видео/каналов YouTube нужны дополнительные настройки (cookies).
+- Node.js необходим для корректной работы с YouTube — без него возможны ошибки "Sign in to confirm you're not a bot".
 
 ### Cookies для Instagram/VK/YouTube
 
@@ -120,6 +201,64 @@ COOKIES_FILE=/path/to/cookies.txt
 ```
 
 Перезапустите бота и повторите попытку.
+
+## Устранение типичных проблем
+
+### yt-dlp не найден
+
+**Проблема:** `Command 'yt-dlp' not found`
+
+**Решение:** 
+- Убедитесь, что вы запускаете бота через `pipenv run` или активировали виртуальное окружение
+- Проверьте установку: `pipenv run yt-dlp --version`
+- Переустановите зависимости: `pipenv install`
+
+### Предупреждение "No supported JavaScript runtime"
+
+**Проблема:** `WARNING | yt-dlp: [youtube] No supported JavaScript runtime could be found`
+
+**Решение:**
+```bash
+# Установите Node.js
+sudo apt update && sudo apt install nodejs
+
+# Проверьте установку
+node --version
+
+# Перезапустите бота
+```
+
+### Ошибка "Sign in to confirm you're not a bot"
+
+**Проблема:** YouTube требует авторизацию
+
+**Решение:**
+1. Установите Node.js (см. выше)
+2. Если проблема сохраняется, используйте cookies (см. раздел "Cookies для Instagram/VK/YouTube")
+3. Убедитесь, что используете актуальную версию yt-dlp: `pipenv run yt-dlp --version` (должна быть 2026.1.31 или новее)
+
+### ModuleNotFoundError при запуске
+
+**Проблема:** `ModuleNotFoundError: No module named 'telebot'`
+
+**Решение:**
+```bash
+# Убедитесь, что зависимости установлены
+pipenv install
+
+# Запускайте через pipenv run
+pipenv run python -m app.main
+```
+
+### Бот не отвечает на команды
+
+**Проблема:** Бот запустился, но не реагирует на сообщения
+
+**Решение:**
+1. Проверьте правильность `BOT_TOKEN` в файле `.env`
+2. Убедитесь, что файл `.env` находится в корне проекта
+3. Проверьте логи на наличие ошибок подключения
+4. Убедитесь, что бот не запущен в другом месте (конфликт polling)
 
 ## Настройки окружения
 

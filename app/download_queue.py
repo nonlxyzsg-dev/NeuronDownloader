@@ -85,7 +85,16 @@ class DownloadManager:
                     self._active_condition.notify_all()
             self._queue.task_done()
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float = 2.0) -> None:
+        """Останавливает все рабочие потоки.
+        
+        Args:
+            timeout: Максимальное время ожидания завершения каждого потока в секундах
+        """
         self._stop_event.set()
+        # Пробуждаем все потоки, ожидающие в condition
+        with self._active_condition:
+            self._active_condition.notify_all()
+        # Ждем завершения потоков
         for worker in self._workers:
-            worker.join(timeout=1)
+            worker.join(timeout=timeout)

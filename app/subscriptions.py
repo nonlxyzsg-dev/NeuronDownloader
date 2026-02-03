@@ -29,8 +29,14 @@ class SubscriptionMonitor:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
+        """Останавливает мониторинг подписок.
+        
+        Args:
+            timeout: Максимальное время ожидания завершения потока в секундах
+        """
         self._stop_event.set()
+        self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -79,6 +85,9 @@ class SubscriptionMonitor:
         resolution: str | None,
     ) -> None:
         if self.storage.is_blocked(user_id):
+            return
+        if self._stop_event.is_set():
+            logging.info("Пропускаем загрузку подписки из-за завершения работы")
             return
         try:
             info = self.downloader.get_info(target_url)

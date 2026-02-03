@@ -14,8 +14,14 @@ class DataCleanupMonitor:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
+        """Останавливает мониторинг очистки данных.
+        
+        Args:
+            timeout: Максимальное время ожидания завершения потока в секундах
+        """
         self._stop_event.set()
+        self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
