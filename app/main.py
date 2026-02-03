@@ -26,6 +26,7 @@ from app.config import (
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
+from app.logger import setup_logging
 from app.storage import Storage
 from app.subscriptions import SubscriptionMonitor
 from app.cleanup import DataCleanupMonitor
@@ -144,9 +145,8 @@ def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN не задан")
 
+    setup_logging()
     os.makedirs(DATA_DIR, exist_ok=True)
-    for logger_name in ("TeleBot", "telebot"):
-        logging.getLogger(logger_name).setLevel(TELEBOT_LOG_LEVEL)
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()
     downloader = VideoDownloader(DATA_DIR)
@@ -270,23 +270,24 @@ def main() -> None:
             progress_message_id: int | None = None
             last_update = 0.0
             last_text = ""
+            download_started = time.monotonic()
+            logged_missing_total = False
 
             def progress_hook(data: dict) -> None:
-                nonlocal last_update, last_text
+                nonlocal last_update, last_text, logged_missing_total
                 if not progress_message_id:
                     return
                 if data.get("status") != "downloading":
                     return
-                now = time.monotonic()
-                if now - last_update < 1:
-                    return
                 downloaded = data.get("downloaded_bytes") or 0
                 total = data.get("total_bytes") or data.get("total_bytes_estimate")
                 speed = data.get("speed")
+                eta = data.get("eta")
                 if total:
                     percent = min(downloaded / total * 100, 100)
                     text = (
                         f"⬇️ Скачивание: {percent:.1f}% "
+                        f"({format_bytes(downloaded)}/{format_bytes(total)}) "
                         f"• {format_speed(speed)}"
                     )
                 else:
@@ -294,6 +295,19 @@ def main() -> None:
                         f"⬇️ Скачивание: {format_bytes(downloaded)} "
                         f"• {format_speed(speed)}"
                     )
+                    if not logged_missing_total:
+                        logging.info(
+                            "Progress without total size (downloaded=%s, speed=%s, url=%s)",
+                            format_bytes(downloaded),
+                            format_speed(speed),
+                            url,
+                        )
+                        logged_missing_total = True
+                if eta is not None:
+                    text = f"{text} • ETA {int(eta)}с"
+                now = time.monotonic()
+                if now - last_update < 1:
+                    return
                 if text == last_text:
                     return
                 try:
@@ -303,6 +317,14 @@ def main() -> None:
                 except Exception:
                     pass
             try:
+                logging.info(
+                    "Queue job started for user=%s chat=%s url=%s format=%s audio_only=%s",
+                    user_id,
+                    chat_id,
+                    url,
+                    selected_format or "best",
+                    audio_only,
+                )
                 if reaction_message_id:
                     try:
                         bot.delete_message(chat_id, reaction_message_id)
@@ -313,11 +335,27 @@ def main() -> None:
                     progress_message_id = sent.message_id
                 except Exception:
                     progress_message_id = None
+                queue_delay = time.monotonic() - download_started
+                logging.info(
+                    "Download started after queue delay %.2f seconds (user=%s, url=%s)",
+                    queue_delay,
+                    user_id,
+                    url,
+                )
                 file_path, info = downloader.download(
                     url,
                     selected_format,
                     audio_only=audio_only,
                     progress_callback=progress_hook,
+                )
+                download_duration = time.monotonic() - download_started
+                total_bytes = info.get("filesize") or info.get("filesize_approx")
+                logging.info(
+                    "Download finished in %.2f seconds (size=%s, path=%s, url=%s)",
+                    download_duration,
+                    format_bytes(total_bytes) if total_bytes else "unknown",
+                    file_path,
+                    url,
                 )
                 with open(file_path, "rb") as handle:
                     if audio_only:
@@ -330,10 +368,17 @@ def main() -> None:
                             timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                         )
                         upload_duration = time.monotonic() - upload_start
+                        upload_speed = (
+                            format_speed(total_bytes / upload_duration)
+                            if total_bytes and upload_duration > 0
+                            else "unknown"
+                        )
                         logging.info(
-                            "Audio uploaded to user %s in %.2f seconds",
+                            "Audio uploaded to user %s in %.2f seconds (size=%s, speed=%s)",
                             user_id,
                             upload_duration,
+                            format_bytes(total_bytes) if total_bytes else "unknown",
+                            upload_speed,
                         )
                         try:
                             os.remove(file_path)
@@ -353,10 +398,17 @@ def main() -> None:
                             supports_streaming=True,
                         )
                         upload_duration = time.monotonic() - upload_start
+                        upload_speed = (
+                            format_speed(total_bytes / upload_duration)
+                            if total_bytes and upload_duration > 0
+                            else "unknown"
+                        )
                         logging.info(
-                            "Video uploaded to user %s in %.2f seconds",
+                            "Video uploaded to user %s in %.2f seconds (size=%s, speed=%s)",
                             user_id,
                             upload_duration,
+                            format_bytes(total_bytes) if total_bytes else "unknown",
+                            upload_speed,
                         )
                         try:
                             os.remove(file_path)
@@ -389,6 +441,12 @@ def main() -> None:
                     bot.send_message(user_id, error_message)
 
         try:
+            logging.info(
+                "Queue status before submit: queued=%s max=%s active_user=%s",
+                download_manager.queued_count(),
+                download_manager.max_queue_size(),
+                download_manager.active_count(user_id),
+            )
             download_manager.submit_user(user_id, _job)
         except queue.Full:
             bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
