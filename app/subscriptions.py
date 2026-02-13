@@ -5,10 +5,12 @@ import threading
 
 from telebot import TeleBot
 
-from app.config import POLL_INTERVAL_SECONDS
+from app.config import POLL_INTERVAL_SECONDS, TELEGRAM_UPLOAD_TIMEOUT_SECONDS
+from app.constants import STATUS_FAILED, STATUS_SUCCESS
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
 from app.storage import Storage
+from app.utils import format_caption, send_with_retry
 
 
 class SubscriptionMonitor:
@@ -30,11 +32,6 @@ class SubscriptionMonitor:
         self._thread.start()
 
     def stop(self, timeout: float = 2.0) -> None:
-        """Останавливает мониторинг подписок.
-        
-        Args:
-            timeout: Максимальное время ожидания завершения потока в секундах
-        """
         self._stop_event.set()
         self._thread.join(timeout=timeout)
 
@@ -47,7 +44,13 @@ class SubscriptionMonitor:
         for user_id, channel_url, resolution, last_video_id in self.storage.list_subscriptions():
             if self.storage.is_blocked(user_id):
                 continue
-            latest = self.downloader.get_latest_entry(channel_url)
+            try:
+                latest = self.downloader.get_latest_entry(channel_url)
+            except Exception:
+                logging.exception(
+                    "Failed to fetch latest entry for channel %s", channel_url,
+                )
+                continue
             if not latest:
                 continue
             latest_id = latest.get("id") or latest.get("url")
@@ -87,28 +90,54 @@ class SubscriptionMonitor:
         if self.storage.is_blocked(user_id):
             return
         if self._stop_event.is_set():
-            logging.info("Пропускаем загрузку подписки из-за завершения работы")
+            logging.info("Skipping subscription download due to shutdown")
             return
         try:
             info = self.downloader.get_info(target_url)
             format_id = self.downloader.resolve_format_id(info, resolution)
             audio_only = resolution == "audio"
-            file_path, info = self.downloader.download(target_url, format_id, audio_only=audio_only)
-            caption = (info.get("title") or "Видео")[:1024]
+            file_path, info = self.downloader.download(
+                target_url, format_id, audio_only=audio_only,
+            )
+            caption = format_caption(info.get("title") or "Видео")
             with open(file_path, "rb") as handle:
                 if audio_only:
-                    self.bot.send_audio(user_id, handle, caption=caption)
+                    send_with_retry(
+                        self.bot.send_audio,
+                        user_id,
+                        handle,
+                        caption=caption,
+                        timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                    )
                 else:
-                    self.bot.send_video(user_id, handle, caption=caption)
+                    send_with_retry(
+                        self.bot.send_video,
+                        user_id,
+                        handle,
+                        caption=caption,
+                        timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                        supports_streaming=True,
+                    )
             try:
                 os.remove(file_path)
             except OSError:
                 logging.exception(
-                    "Failed to удалить файл подписки %s после отправки",
+                    "Failed to delete subscription file %s after upload",
                     file_path,
                 )
             self.storage.update_last_video(user_id, channel_url, latest_id)
-            self.storage.log_download(user_id, info.get("extractor_key", "unknown"), "success")
+            self.storage.log_download(
+                user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+            )
         except Exception as exc:
-            self.storage.log_download(user_id, "unknown", "failed")
-            self.bot.send_message(user_id, f"Ошибка при скачивании: {exc}")
+            self.storage.log_download(user_id, "unknown", STATUS_FAILED)
+            logging.exception(
+                "Subscription download failed for user %s, url %s: %s",
+                user_id, target_url, exc,
+            )
+            try:
+                self.bot.send_message(
+                    user_id, f"Ошибка при скачивании подписки: {exc}",
+                )
+            except Exception:
+                pass

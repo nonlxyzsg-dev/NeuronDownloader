@@ -16,6 +16,7 @@ from app.config import (
     YOUTUBE_JS_RUNTIME_PATH,
     YOUTUBE_PLAYER_CLIENTS,
 )
+from app.constants import PREFERRED_VIDEO_FORMAT
 
 
 class YtDlpLogger:
@@ -27,6 +28,7 @@ class YtDlpLogger:
 
     def error(self, message: str) -> None:
         logging.error("yt-dlp: %s", message)
+
 
 @dataclass
 class FormatOption:
@@ -45,7 +47,7 @@ class VideoDownloader:
         if not COOKIES_FILE:
             return None
         if not os.path.exists(COOKIES_FILE):
-            logging.warning("Cookie файл не найден: %s", COOKIES_FILE)
+            logging.warning("Cookie file not found: %s", COOKIES_FILE)
             return None
 
         sanitized_lines: list[str] = []
@@ -89,7 +91,7 @@ class VideoDownloader:
             handle.write("# Netscape HTTP Cookie File\n")
             for line in sanitized_lines:
                 handle.write(f"{line}\n")
-        logging.warning("Cookie файл очищен и сохранен в %s", sanitized_path)
+        logging.warning("Cookie file sanitized and saved to %s", sanitized_path)
         return sanitized_path
 
     def _base_opts(self, skip_download: bool = False) -> dict:
@@ -103,8 +105,10 @@ class VideoDownloader:
             "restrictfilenames": True,
             "user_agent": USER_AGENT,
             "logger": YtDlpLogger(),
-            # Включаем автоматическую загрузку EJS скриптов с GitHub для решения YouTube challenges
             "remote_components": ["ejs:github"],
+            # Force mp4 container when merging video+audio to avoid webm
+            # which Telegram cannot play inline
+            "merge_output_format": PREFERRED_VIDEO_FORMAT,
         }
         if VK_USERNAME:
             opts["username"] = VK_USERNAME
@@ -121,12 +125,11 @@ class VideoDownloader:
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         logging.debug(
-            "yt-dlp options prepared: skip_download=%s format=%s player_clients=%s js_runtime=%s js_runtime_path=%s",
+            "yt-dlp options: skip_download=%s format=%s merge_output=%s player_clients=%s",
             skip_download,
             opts.get("format"),
+            opts.get("merge_output_format"),
             YOUTUBE_PLAYER_CLIENTS or [],
-            YOUTUBE_JS_RUNTIME or "default",
-            YOUTUBE_JS_RUNTIME_PATH or "default",
         )
         return opts
 
@@ -174,15 +177,15 @@ class VideoDownloader:
         )
         if formats:
             logging.info(
-                "Доступные форматы (сырые): %s",
+                "Raw formats: %s",
                 ", ".join(
                     f"{format_id or 'unknown'}:{height or 'n/a'}"
                     for format_id, height in raw_heights
                 ),
             )
             logging.info(
-                "Доступные варианты качества: %s",
-                ", ".join(option.label for option in sorted_options) or "нет",
+                "Available quality options: %s",
+                ", ".join(option.label for option in sorted_options) or "none",
             )
         return sorted_options
 
@@ -196,6 +199,14 @@ class VideoDownloader:
         ydl_opts = self._base_opts()
         if audio_only:
             ydl_opts["format"] = "bestaudio/best"
+            # For audio, prefer m4a/mp3 over webm/opus
+            ydl_opts["merge_output_format"] = None
+            ydl_opts["postprocessors"] = [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                }
+            ]
         elif format_id:
             ydl_opts["format"] = f"{format_id}+bestaudio/best"
         if progress_callback:
@@ -205,6 +216,16 @@ class VideoDownloader:
         file_path = ydl.prepare_filename(info)
         if info.get("_filename"):
             file_path = info["_filename"]
+        # After postprocessing, the extension might have changed
+        # Check for actual file existence
+        if not os.path.exists(file_path):
+            # Try common extensions after conversion
+            base = os.path.splitext(file_path)[0]
+            for ext in ("mp4", "m4a", "mp3", "mkv"):
+                candidate = f"{base}.{ext}"
+                if os.path.exists(candidate):
+                    file_path = candidate
+                    break
         safe_path = self._rename_to_safe_filename(file_path, info)
         return safe_path, info
 
@@ -214,6 +235,10 @@ class VideoDownloader:
         format_id: str | None,
         audio_only: bool = False,
     ) -> tuple[str | None, int | None]:
+        """Get a direct HTTP URL for a format that Telegram can play.
+
+        For video, only return URLs for mp4 containers to avoid webm issues.
+        """
         formats = info.get("formats") or []
         candidates = []
         if audio_only:
@@ -237,6 +262,15 @@ class VideoDownloader:
             and (fmt.get("protocol") or "").startswith("http")
             and fmt.get("protocol") not in ("m3u8", "m3u8_native", "dash")
         ]
+        # Filter out webm/non-mp4 video formats to avoid Telegram playback issues
+        if not audio_only:
+            mp4_candidates = [
+                fmt for fmt in candidates
+                if (fmt.get("ext") or "").lower() == "mp4"
+            ]
+            # Only use mp4 filter if we have mp4 candidates
+            if mp4_candidates:
+                candidates = mp4_candidates
         if format_id:
             exact = [fmt for fmt in candidates if str(fmt.get("format_id")) == format_id]
             if exact:
@@ -286,7 +320,7 @@ class VideoDownloader:
         try:
             os.replace(file_path, unique_path)
         except OSError:
-            logging.exception("Failed to rename file %s to %s", file_path, unique_path)
+            logging.exception("Failed to rename %s -> %s", file_path, unique_path)
             return file_path
         return unique_path
 
