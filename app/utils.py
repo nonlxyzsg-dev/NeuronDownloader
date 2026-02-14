@@ -3,10 +3,12 @@
 import logging
 import os
 import time
+import traceback
 import threading
 
 from app.constants import (
     BOT_SIGNATURE,
+    EMOJI_ALERT,
     MEMBERSHIP_CACHE_TTL,
     TELEGRAM_CAPTION_MAX_LENGTH,
     TELEGRAM_MAX_FILE_SIZE,
@@ -30,8 +32,8 @@ def is_youtube_url(url: str) -> bool:
 
 def append_youtube_client_hint(message: str) -> str:
     hint = (
-        'Подсказка: клиент YouTube "android_creator" может быть неподдерживаем. '
-        "Попробуйте убрать его из YOUTUBE_PLAYER_CLIENTS или заменить на android/web."
+        '\u041f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0430: \u043a\u043b\u0438\u0435\u043d\u0442 YouTube "android_creator" \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043d\u0435\u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043c. '
+        "\u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0443\u0431\u0440\u0430\u0442\u044c \u0435\u0433\u043e \u0438\u0437 YOUTUBE_PLAYER_CLIENTS \u0438\u043b\u0438 \u0437\u0430\u043c\u0435\u043d\u0438\u0442\u044c \u043d\u0430 android/web."
     )
     return f"{message}\n\n{hint}"
 
@@ -72,19 +74,21 @@ def format_speed(value: float | None) -> str:
     return f"{format_bytes(value)}/s"
 
 
-def format_limit_message() -> str:
-    if FREE_DOWNLOAD_WINDOW_SECONDS % 3600 == 0:
-        hours = FREE_DOWNLOAD_WINDOW_SECONDS // 3600
-        period = f"{hours} час(а)" if hours != 1 else "1 час"
-    elif FREE_DOWNLOAD_WINDOW_SECONDS % 60 == 0:
-        minutes = FREE_DOWNLOAD_WINDOW_SECONDS // 60
-        period = f"{minutes} минут"
+def format_limit_message(free_limit: int | None = None, window_seconds: int | None = None) -> str:
+    limit = free_limit if free_limit is not None else FREE_DOWNLOAD_LIMIT
+    window = window_seconds if window_seconds is not None else FREE_DOWNLOAD_WINDOW_SECONDS
+    if window % 3600 == 0:
+        hours = window // 3600
+        period = f"{hours} \u0447\u0430\u0441(\u0430)" if hours != 1 else "1 \u0447\u0430\u0441"
+    elif window % 60 == 0:
+        minutes = window // 60
+        period = f"{minutes} \u043c\u0438\u043d\u0443\u0442"
     else:
-        period = f"{FREE_DOWNLOAD_WINDOW_SECONDS} секунд"
+        period = f"{window} \u0441\u0435\u043a\u0443\u043d\u0434"
     return (
-        f"Доступно {FREE_DOWNLOAD_LIMIT} скачивание(я) за {period}. "
-        "Поддержите разработчика и подпишитесь на наши ресурсы, "
-        "чтобы получить неограниченные загрузки."
+        f"\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u043e {limit} \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435(\u044f) \u0437\u0430 {period}.\n"
+        "\u042d\u0442\u043e\u0442 \u0441\u0435\u0440\u0432\u0438\u0441 \u2014 \u0431\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u044c \u043f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u0430\u043c \u043a\u0430\u043d\u0430\u043b\u0430 \u00ab\u0411\u0430\u043d\u043a\u0430 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438\u00bb. "
+        "\u041f\u043e\u0434\u043f\u0438\u0448\u0438\u0442\u0435\u0441\u044c, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0431\u0435\u0437\u043b\u0438\u043c\u0438\u0442\u043d\u044b\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438!"
     )
 
 
@@ -144,6 +148,35 @@ def send_with_retry(send_func, *args, **kwargs):
     raise last_exc
 
 
+# --- Error notification ---
+
+
+def notify_admin_error(bot, user_id: int, username: str, action: str, error: Exception) -> None:
+    """Send error notification to all admins with user context."""
+    tb = traceback.format_exc()
+    if len(tb) > 800:
+        tb = "..." + tb[-800:]
+    message = (
+        f"{EMOJI_ALERT} <b>\u041e\u0448\u0438\u0431\u043a\u0430 \u0431\u043e\u0442\u0430</b>\n\n"
+        f"\U0001f464 <b>\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c:</b> {user_id}"
+    )
+    if username:
+        message += f" (@{username})"
+    message += (
+        f"\n\U0001f4cb <b>\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435:</b> {action}"
+        f"\n\u274c <b>\u041e\u0448\u0438\u0431\u043a\u0430:</b> {error}"
+        f"\n\n<pre>{tb}</pre>"
+    )
+    # Truncate to Telegram limit
+    if len(message) > 4000:
+        message = message[:4000] + "..."
+    for admin_id in ADMIN_IDS:
+        try:
+            bot.send_message(admin_id, message, parse_mode="HTML")
+        except Exception:
+            logging.debug("Failed to notify admin %s about error", admin_id)
+
+
 # --- Membership cache ---
 
 
@@ -179,11 +212,10 @@ class ActiveDownloads:
     """Track active downloads to prevent duplicate concurrent downloads of the same URL."""
 
     def __init__(self) -> None:
-        self._active: dict[str, int] = {}  # url -> count of active downloads
+        self._active: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def try_acquire(self, url: str) -> bool:
-        """Try to start a download for this URL. Returns False if already downloading."""
         with self._lock:
             if self._active.get(url, 0) > 0:
                 return False
@@ -191,7 +223,6 @@ class ActiveDownloads:
             return True
 
     def release(self, url: str) -> None:
-        """Mark download as finished."""
         with self._lock:
             count = self._active.get(url, 0)
             if count <= 1:
