@@ -43,7 +43,7 @@ from app.constants import (
     EMOJI_VIDEO,
     FORMAT_AUDIO,
     FORMAT_BEST,
-    MENU_HELP,
+    MENU_ADMIN,
     MENU_REPORT,
     TELEGRAM_CALLBACK_DATA_MAX_BYTES,
     TELEGRAM_MAX_BUTTONS_PER_KEYBOARD,
@@ -95,10 +95,13 @@ def build_format_keyboard(token: str, options: list[FormatOption]) -> types.Inli
     return markup
 
 
-def build_main_menu() -> types.ReplyKeyboardMarkup:
+def build_main_menu(is_admin: bool = False) -> types.ReplyKeyboardMarkup:
     """Строит главное reply-меню бота."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(MENU_HELP, MENU_REPORT)
+    if is_admin:
+        markup.row(MENU_REPORT, MENU_ADMIN)
+    else:
+        markup.row(MENU_REPORT)
     return markup
 
 

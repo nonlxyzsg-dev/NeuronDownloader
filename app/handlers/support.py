@@ -11,6 +11,7 @@ from app.constants import (
     STATE_AWAITING_REPORT,
 )
 from app.keyboards import build_main_menu
+from app.utils import is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +52,13 @@ def register_support_handlers(ctx) -> None:
                 logger.exception("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0443\u0432\u0435\u0434\u043e\u043c\u0438\u0442\u044c \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0430 %s \u043e \u0442\u0438\u043a\u0435\u0442\u0435 #%s",
                                  admin_id, ticket_id)
 
-    def _confirm_ticket(chat_id: int, ticket_id: int) -> None:
+    def _confirm_ticket(chat_id: int, user_id: int, ticket_id: int) -> None:
         """Отправляет пользователю подтверждение создания обращения."""
         bot.send_message(
             chat_id,
             f"{EMOJI_DONE} \u041e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u0435 #{ticket_id} \u0441\u043e\u0437\u0434\u0430\u043d\u043e. "
             "\u041c\u044b \u043e\u0442\u0432\u0435\u0442\u0438\u043c \u0432\u0430\u043c \u0432 \u0431\u043b\u0438\u0436\u0430\u0439\u0448\u0435\u0435 \u0432\u0440\u0435\u043c\u044f.",
-            reply_markup=build_main_menu(),
+            reply_markup=build_main_menu(is_admin=is_admin(user_id)),
         )
 
     # ------------------------------------------------------------------
@@ -125,7 +126,7 @@ def register_support_handlers(ctx) -> None:
             )
             ctx.set_user_state(user_id, None)
 
-            _confirm_ticket(message.chat.id, ticket_id)
+            _confirm_ticket(message.chat.id, user_id, ticket_id)
             _notify_admins(
                 ticket_id,
                 user_id,
@@ -137,7 +138,7 @@ def register_support_handlers(ctx) -> None:
             bot.send_message(
                 message.chat.id,
                 f"{EMOJI_ALERT} \u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u043e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0438 \u043e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u044f. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
-                reply_markup=build_main_menu(),
+                reply_markup=build_main_menu(is_admin=is_admin(user_id)),
             )
             ctx.set_user_state(user_id, None)
 
@@ -166,7 +167,7 @@ def register_support_handlers(ctx) -> None:
             )
             ctx.set_user_state(user_id, None)
 
-            _confirm_ticket(message.chat.id, ticket_id)
+            _confirm_ticket(message.chat.id, user_id, ticket_id)
             _notify_admins(
                 ticket_id,
                 user_id,
@@ -180,7 +181,7 @@ def register_support_handlers(ctx) -> None:
             bot.send_message(
                 message.chat.id,
                 f"{EMOJI_ALERT} \u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u043e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0438 \u043e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u044f. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
-                reply_markup=build_main_menu(),
+                reply_markup=build_main_menu(is_admin=is_admin(user_id)),
             )
             ctx.set_user_state(user_id, None)
 
@@ -215,7 +216,7 @@ def register_support_handlers(ctx) -> None:
             )
             ctx.set_user_state(user_id, None)
 
-            _confirm_ticket(message.chat.id, ticket_id)
+            _confirm_ticket(message.chat.id, user_id, ticket_id)
             _notify_admins(
                 ticket_id,
                 user_id,
@@ -229,6 +230,6 @@ def register_support_handlers(ctx) -> None:
             bot.send_message(
                 message.chat.id,
                 f"{EMOJI_ALERT} \u041f\u0440\u043e\u0438\u0437\u043e\u0448\u043b\u0430 \u043e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u0438 \u043e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u044f. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
-                reply_markup=build_main_menu(),
+                reply_markup=build_main_menu(is_admin=is_admin(user_id)),
             )
             ctx.set_user_state(user_id, None)
