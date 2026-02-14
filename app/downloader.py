@@ -21,6 +21,19 @@ from app.config import (
 from app.constants import PREFERRED_VIDEO_FORMAT
 
 
+def _is_h264(vcodec: str | None) -> bool:
+    """Проверяет, является ли видеокодек H.264 (AVC).
+
+    H.264 поддерживается всеми Apple-устройствами и корректно
+    воспроизводится в Telegram на iOS/macOS. VP9 и AV1 могут
+    приводить к проблемам: звук идёт, а видео зависает на первом кадре.
+    """
+    if not vcodec:
+        return False
+    v = vcodec.lower()
+    return v.startswith("avc") or v.startswith("h264")
+
+
 class YtDlpLogger:
     """Логгер-обёртка для перенаправления вывода yt-dlp в стандартный logging."""
 
@@ -106,7 +119,10 @@ class VideoDownloader:
         """Формирует базовые опции для yt-dlp."""
         output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
-            "format": "bestvideo+bestaudio/best",
+            # Предпочитаем H.264 (AVC) — универсально совместим с Apple-устройствами.
+            # VP9/AV1 в mp4-контейнере не декодируются на iOS/macOS в Telegram:
+            # звук играет, а видео зависает на первом кадре.
+            "format": "bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best",
             "quiet": True,
             "skip_download": skip_download,
             "noplaylist": True,
@@ -150,7 +166,8 @@ class VideoDownloader:
     def list_formats(self, info: dict) -> list[FormatOption]:
         """Извлекает список доступных форматов (разрешений) из метаданных."""
         formats = info.get("formats", [])
-        options: dict[str, tuple[FormatOption, float]] = {}
+        # (FormatOption, bitrate, is_h264) — H.264 приоритетнее для Apple-совместимости
+        options: dict[str, tuple[FormatOption, float, bool]] = {}
         raw_heights: list[tuple[str, int | None]] = []
         for fmt in formats:
             if fmt.get("vcodec") in (None, "none"):
@@ -176,11 +193,29 @@ class VideoDownloader:
             label = f"{height}p"
             current = options.get(label)
             current_tbr = float(fmt.get("tbr") or 0)
-            if current is None or current_tbr > current[1]:
+            is_h264 = _is_h264(fmt.get("vcodec"))
+            if current is None:
                 options[label] = (
                     FormatOption(label=label, format_id=format_id, height=height),
                     current_tbr,
+                    is_h264,
                 )
+            else:
+                prev_is_h264 = current[2]
+                prev_tbr = current[1]
+                # Предпочитаем H.264 для совместимости с Apple-устройствами;
+                # при одинаковом типе кодека выбираем больший битрейт
+                prefer_new = False
+                if is_h264 and not prev_is_h264:
+                    prefer_new = True
+                elif is_h264 == prev_is_h264 and current_tbr > prev_tbr:
+                    prefer_new = True
+                if prefer_new:
+                    options[label] = (
+                        FormatOption(label=label, format_id=format_id, height=height),
+                        current_tbr,
+                        is_h264,
+                    )
         sorted_options = sorted(
             (value[0] for value in options.values()),
             key=lambda opt: opt.height or 0,
@@ -282,6 +317,13 @@ class VideoDownloader:
             # Используем mp4-фильтр только если есть mp4-кандидаты
             if mp4_candidates:
                 candidates = mp4_candidates
+            # Предпочитаем H.264 (AVC) — VP9/AV1 в mp4 не воспроизводятся на Apple
+            h264_candidates = [
+                fmt for fmt in candidates
+                if _is_h264(fmt.get("vcodec"))
+            ]
+            if h264_candidates:
+                candidates = h264_candidates
         if format_id:
             exact = [fmt for fmt in candidates if str(fmt.get("format_id")) == format_id]
             if exact:
