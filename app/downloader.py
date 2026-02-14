@@ -58,21 +58,21 @@ def _get_video_codec(file_path: str) -> str | None:
     return None
 
 
-def ensure_h264(file_path: str) -> tuple[str, bool]:
+def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     """Перекодирует видео в H.264, если текущий кодек несовместим с Apple.
 
-    Возвращает (путь_к_файлу, было_перекодировано).
+    Возвращает (путь_к_файлу, было_перекодировано, исходный_кодек).
     H.265 (HEVC), VP9, AV1 и другие кодеки вызывают зависание видео
     на первом кадре в Telegram на iOS/macOS — звук идёт, картинка нет.
     """
     codec = _get_video_codec(file_path)
     if codec is None:
         logging.warning("Не удалось определить кодек для %s, пропускаем перекодирование", file_path)
-        return file_path, False
+        return file_path, False, None
 
     if codec == "h264":
         logging.info("Видео уже в H.264, перекодирование не требуется: %s", file_path)
-        return file_path, False
+        return file_path, False, codec
 
     logging.info(
         "Видеокодек %s не совместим с Apple, перекодируем в H.264: %s",
@@ -118,14 +118,14 @@ def ensure_h264(file_path: str) -> tuple[str, bool]:
                 os.remove(output_path)
             except OSError:
                 pass
-            return file_path, False
+            return file_path, False, codec
     except Exception:
         logging.exception("FFmpeg перекодирование не удалось для %s", file_path)
         try:
             os.remove(output_path)
         except OSError:
             pass
-        return file_path, False
+        return file_path, False, codec
 
     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
         logging.error("Перекодированный файл пустой или отсутствует: %s", output_path)
@@ -133,7 +133,7 @@ def ensure_h264(file_path: str) -> tuple[str, bool]:
             os.remove(output_path)
         except OSError:
             pass
-        return file_path, False
+        return file_path, False, codec
 
     # Заменяем оригинал перекодированным файлом
     try:
@@ -142,14 +142,14 @@ def ensure_h264(file_path: str) -> tuple[str, bool]:
     except OSError:
         logging.exception("Не удалось заменить %s перекодированным файлом", file_path)
         if os.path.exists(output_path):
-            return output_path, True
-        return file_path, False
+            return output_path, True, codec
+        return file_path, False, codec
 
     logging.info(
         "Перекодирование завершено: %s (кодек %s -> h264)",
         file_path, codec,
     )
-    return file_path, True
+    return file_path, True, codec
 
 
 class YtDlpLogger:

@@ -10,6 +10,7 @@ from telebot import types
 from app.config import ADMIN_IDS, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS
 from app.constants import (
     CB_ADMIN,
+    CB_ADMIN_INCIDENTS,
     CB_ADMIN_STATS,
     CB_ADMIN_STATS_PLATFORM,
     CB_ADMIN_STATS_DAILY,
@@ -28,6 +29,9 @@ from app.constants import (
     CB_ADMIN_SET_WINDOW,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
+    CB_INCIDENT_LIST,
+    CB_INCIDENT_STATUS,
+    CB_INCIDENT_VIEW,
     CB_TICKET_VIEW,
     CB_TICKET_REPLY,
     CB_TICKET_CLOSE,
@@ -35,6 +39,8 @@ from app.constants import (
     EMOJI_STATS,
     EMOJI_BACK,
     EMOJI_DONE,
+    INCIDENT_FIXED,
+    INCIDENT_WONT_FIX,
     STATE_AWAITING_LIMIT,
     STATE_AWAITING_WINDOW,
     STATE_AWAITING_CHANNEL_ID,
@@ -44,13 +50,16 @@ from app.constants import (
 from app.keyboards import (
     build_admin_menu,
     build_admin_back,
+    build_admin_incidents_list,
     build_admin_stats_submenu,
     build_admin_users_page,
     build_admin_settings,
     build_admin_channels,
     build_admin_tickets,
+    build_incident_actions,
     build_ticket_actions,
     build_restart_confirm,
+    incident_status_label,
 )
 from app.logger import get_log_file_path
 from app.utils import is_admin, format_bytes
@@ -130,6 +139,13 @@ def register_admin_handlers(ctx) -> None:
     # 1. Команда /admin
     # ==================================================================
 
+    def _admin_menu_markup():
+        """Строит меню админ-панели с актуальными счётчиками."""
+        return build_admin_menu(
+            open_tickets=storage.count_open_tickets(),
+            open_incidents=storage.count_open_incidents(),
+        )
+
     @bot.message_handler(commands=["admin"])
     def cmd_admin(message: types.Message):
         ctx.ensure_user(message.from_user)
@@ -137,12 +153,10 @@ def register_admin_handlers(ctx) -> None:
         if not is_admin(user_id):
             return
         ctx.clear_last_inline(user_id, message.chat.id)
-        open_tickets = storage.count_open_tickets()
-        markup = build_admin_menu(open_tickets=open_tickets)
         bot.send_message(
             message.chat.id,
             "⚙️ Панель администратора",
-            reply_markup=markup,
+            reply_markup=_admin_menu_markup(),
         )
 
     # ==================================================================
@@ -156,12 +170,10 @@ def register_admin_handlers(ctx) -> None:
             bot.answer_callback_query(call.id, "Доступ запрещён.")
             return
         bot.answer_callback_query(call.id)
-        open_tickets = storage.count_open_tickets()
-        markup = build_admin_menu(open_tickets=open_tickets)
         _safe_edit(
             call.message.chat.id, call.message.message_id,
             "⚙️ Панель администратора",
-            reply_markup=markup,
+            reply_markup=_admin_menu_markup(),
         )
 
     # ==================================================================
@@ -746,6 +758,165 @@ def register_admin_handlers(ctx) -> None:
         bot.send_message(call.message.chat.id, "🔄 Перезапуск бота...")
         logger.info("Перезапуск бота запрошен администратором %s", user_id)
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    # ==================================================================
+    # ИНЦИДЕНТЫ ВОСПРОИЗВЕДЕНИЯ ВИДЕО
+    # ==================================================================
+
+    def _show_incidents(chat_id: int, message_id: int):
+        """Отображает список открытых инцидентов."""
+        incidents = storage.list_video_incidents()
+        users_map: dict[int, str] = {}
+        for inc in incidents:
+            uid = inc[1]
+            if uid not in users_map:
+                user_row = storage.get_user(uid)
+                if user_row:
+                    users_map[uid] = user_row[1] or user_row[2] or str(uid)
+                else:
+                    users_map[uid] = str(uid)
+        markup = build_admin_incidents_list(incidents, users_map)
+        count = len(incidents)
+        _safe_edit(
+            chat_id, message_id,
+            f"🚧 Инциденты воспроизведения: {count}",
+            reply_markup=markup,
+        )
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_INCIDENTS)
+    def cb_admin_incidents(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        _show_incidents(call.message.chat.id, call.message.message_id)
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_INCIDENT_LIST)
+    def cb_incident_list(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        _show_incidents(call.message.chat.id, call.message.message_id)
+
+    @bot.callback_query_handler(
+        func=lambda c: c.data and c.data.startswith(f"{CB_INCIDENT_VIEW}|")
+    )
+    def cb_incident_view(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        try:
+            incident_id = int(call.data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            return
+        inc = storage.get_video_incident(incident_id)
+        if not inc:
+            _safe_edit(
+                call.message.chat.id, call.message.message_id,
+                "Инцидент не найден.",
+                reply_markup=build_admin_back(),
+            )
+            return
+        _id, inc_uid, url, platform, fmt_id, codec, resolution, fsize, status, created, resolved = inc
+        user_row = storage.get_user(inc_uid)
+        display = f"@{user_row[1] or user_row[2]}" if user_row else str(inc_uid)
+        status_lbl = incident_status_label(status)
+        lines = [
+            f"🚧 Инцидент #{incident_id}\n",
+            f"Пользователь: {display}",
+            f"Платформа: {platform or '?'}",
+            f"Кодек: {codec or '?'}",
+            f"Разрешение: {resolution or '?'}",
+            f"Формат: {fmt_id or '?'}",
+            f"Размер: {format_bytes(fsize) if fsize else '?'}",
+            f"URL: {url or '?'}",
+            f"\nСтатус: {status_lbl}",
+            f"Создан: {created or '?'}",
+        ]
+        if resolved:
+            lines.append(f"Решён: {resolved}")
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:4000] + "\n..."
+        markup = build_incident_actions(incident_id, status)
+        _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
+
+    @bot.callback_query_handler(
+        func=lambda c: c.data and c.data.startswith(f"{CB_INCIDENT_STATUS}|")
+    )
+    def cb_incident_status(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        try:
+            parts = call.data.split("|")
+            incident_id = int(parts[1])
+            new_status = parts[2]
+        except (ValueError, IndexError):
+            bot.answer_callback_query(call.id, "Ошибка.")
+            return
+        inc = storage.get_video_incident(incident_id)
+        if not inc:
+            bot.answer_callback_query(call.id, "Инцидент не найден.")
+            return
+        storage.set_incident_status(incident_id, new_status)
+        status_lbl = incident_status_label(new_status)
+        bot.answer_callback_query(call.id, f"Статус: {status_lbl}")
+
+        # Уведомляем пользователя при смене на «исправлено» или «не будет исправлено»
+        inc_uid = inc[1]
+        if new_status == INCIDENT_FIXED:
+            try:
+                bot.send_message(
+                    inc_uid,
+                    f"✅ Мы исправили проблему с воспроизведением видео "
+                    f"(обращение #{incident_id}).\n\n"
+                    "Попробуйте скачать видео заново — теперь должно работать!",
+                )
+            except Exception as exc:
+                logger.warning("Не удалось уведомить пользователя %s: %s", inc_uid, exc)
+        elif new_status == INCIDENT_WONT_FIX:
+            try:
+                bot.send_message(
+                    inc_uid,
+                    f"ℹ️ По вашему обращению #{incident_id}:\n\n"
+                    "К сожалению, данная проблема вызвана ограничениями платформы "
+                    "и не может быть исправлена на нашей стороне.\n"
+                    "Спасибо за обратную связь!",
+                )
+            except Exception as exc:
+                logger.warning("Не удалось уведомить пользователя %s: %s", inc_uid, exc)
+
+        # Обновляем отображение инцидента
+        inc = storage.get_video_incident(incident_id)
+        if inc:
+            _id, inc_uid, url, platform, fmt_id, codec, resolution, fsize, status, created, resolved = inc
+            user_row = storage.get_user(inc_uid)
+            display = f"@{user_row[1] or user_row[2]}" if user_row else str(inc_uid)
+            status_lbl = incident_status_label(status)
+            lines = [
+                f"🚧 Инцидент #{incident_id}\n",
+                f"Пользователь: {display}",
+                f"Платформа: {platform or '?'}",
+                f"Кодек: {codec or '?'}",
+                f"Разрешение: {resolution or '?'}",
+                f"Формат: {fmt_id or '?'}",
+                f"Размер: {format_bytes(fsize) if fsize else '?'}",
+                f"URL: {url or '?'}",
+                f"\nСтатус: {status_lbl}",
+                f"Создан: {created or '?'}",
+            ]
+            if resolved:
+                lines.append(f"Решён: {resolved}")
+            text = "\n".join(lines)
+            markup = build_incident_actions(incident_id, status)
+            _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
     # 27. Обратный вызов "noop" -> пустой ответ

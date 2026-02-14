@@ -113,6 +113,24 @@ class Storage:
                 )
                 """
             )
+            # --- Инциденты воспроизведения видео ---
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS video_incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    url TEXT,
+                    platform TEXT,
+                    format_id TEXT,
+                    codec TEXT,
+                    resolution TEXT,
+                    file_size INTEGER,
+                    status TEXT DEFAULT 'reported',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP
+                )
+                """
+            )
             # --- Динамические настройки бота ---
             conn.execute(
                 """
@@ -446,3 +464,71 @@ class Storage:
                 """,
                 (key, value),
             )
+
+    # --- Инциденты воспроизведения видео ---
+
+    def create_video_incident(
+        self,
+        user_id: int,
+        url: str | None = None,
+        platform: str | None = None,
+        format_id: str | None = None,
+        codec: str | None = None,
+        resolution: str | None = None,
+        file_size: int | None = None,
+    ) -> int:
+        """Создаёт инцидент воспроизведения видео и возвращает его ID."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO video_incidents (user_id, url, platform, format_id, codec, resolution, file_size) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, url, platform, format_id, codec, resolution, file_size),
+            )
+            return cur.lastrowid
+
+    def get_video_incident(self, incident_id: int) -> tuple | None:
+        """Возвращает данные инцидента: (id, user_id, url, platform, format_id, codec, resolution, file_size, status, created_at, resolved_at)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT id, user_id, url, platform, format_id, codec, resolution, file_size, status, created_at, resolved_at "
+                "FROM video_incidents WHERE id = ?",
+                (incident_id,),
+            )
+            return cur.fetchone()
+
+    def list_video_incidents(self, status: str | None = None) -> list[tuple]:
+        """Возвращает список инцидентов (опционально фильтр по статусу)."""
+        with self._connect() as conn:
+            if status:
+                cur = conn.execute(
+                    "SELECT id, user_id, url, platform, format_id, codec, resolution, file_size, status, created_at, resolved_at "
+                    "FROM video_incidents WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT id, user_id, url, platform, format_id, codec, resolution, file_size, status, created_at, resolved_at "
+                    "FROM video_incidents WHERE status IN ('reported', 'in_progress') ORDER BY created_at DESC"
+                )
+            return cur.fetchall()
+
+    def set_incident_status(self, incident_id: int, status: str) -> None:
+        """Обновляет статус инцидента. При 'fixed'/'wont_fix' устанавливает resolved_at."""
+        with self._connect() as conn:
+            if status in ("fixed", "wont_fix"):
+                conn.execute(
+                    "UPDATE video_incidents SET status = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (status, incident_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE video_incidents SET status = ? WHERE id = ?",
+                    (status, incident_id),
+                )
+
+    def count_open_incidents(self) -> int:
+        """Возвращает количество открытых инцидентов (reported + in_progress)."""
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM video_incidents WHERE status IN ('reported', 'in_progress')"
+            ).fetchone()[0]
