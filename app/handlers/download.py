@@ -12,7 +12,6 @@ from telebot import types
 
 from app.config import (
     ENABLE_REACTIONS,
-    MAX_ACTIVE_TASKS_PER_USER,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
 )
 from app.constants import (
@@ -121,7 +120,6 @@ def register_download_handlers(ctx) -> None:
         selected_format: str | None,
         title: str,
         status_message_id: int | None = None,
-        queue_message_id: int | None = None,
         audio_only: bool = False,
         reaction_message_id: int | None = None,
     ) -> None:
@@ -214,11 +212,6 @@ def register_download_handlers(ctx) -> None:
                 if reaction_message_id:
                     try:
                         bot.delete_message(chat_id, reaction_message_id)
-                    except Exception:
-                        pass
-                if queue_message_id:
-                    try:
-                        bot.delete_message(chat_id, queue_message_id)
                     except Exception:
                         pass
                 if progress_message_id:
@@ -599,26 +592,15 @@ def register_download_handlers(ctx) -> None:
                 return
             now_ts = int(datetime.now(timezone.utc).timestamp())
             storage.log_free_download(call.from_user.id, now_ts)
-        if (
-            MAX_ACTIVE_TASKS_PER_USER > 0
-            and download_manager.active_count(call.from_user.id)
-            >= MAX_ACTIVE_TASKS_PER_USER
-        ):
-            bot.answer_callback_query(
-                call.id, "\u0414\u043e\u0441\u0442\u0438\u0433\u043d\u0443\u0442 \u043b\u0438\u043c\u0438\u0442 \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0445 \u0437\u0430\u0433\u0440\u0443\u0437\u043e\u043a. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
-            )
-            return
-        queue_length = download_manager.queued_count()
-        if queue_length >= download_manager.max_queue_size():
+        if download_manager.queued_count() >= download_manager.max_queue_size():
             bot.answer_callback_query(
                 call.id, "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
             )
             return
-        queue_msg = bot.send_message(
-            call.message.chat.id,
-            f"{EMOJI_HOURGLASS} \u0412\u0430\u0448 \u0437\u0430\u043f\u0440\u043e\u0441 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438. "
-            f"\u041f\u043e\u0437\u0438\u0446\u0438\u044f: {queue_length + 1}",
-        )
+        # Считаем будущие позиции (текущие + этот запрос)
+        user_count, total = ctx.get_queue_info(call.from_user.id)
+        queue_text = ctx._format_queue_text(user_count + 1, total + 1)
+        queue_msg = bot.send_message(call.message.chat.id, queue_text)
         ctx.add_queue_message(call.from_user.id, call.message.chat.id, queue_msg.message_id)
         bot.answer_callback_query(call.id, "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c.")
         selected_format = None if format_id in (FORMAT_BEST, FORMAT_AUDIO) else format_id
@@ -630,7 +612,6 @@ def register_download_handlers(ctx) -> None:
             selected_format,
             title,
             status_message_id=call.message.message_id,
-            queue_message_id=queue_msg.message_id,
             audio_only=audio_only,
             reaction_message_id=reaction_message_id,
         )

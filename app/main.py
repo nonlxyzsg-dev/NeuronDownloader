@@ -59,8 +59,8 @@ class BotContext:
         # Машина состояний пользователя/админа
         self._user_states: dict[int, object] = {}
         self._user_states_lock = threading.Lock()
-        # Отслеживание сообщений об очереди
-        self._queue_messages: dict[int, tuple[int, int]] = {}
+        # Отслеживание сообщений об очереди (список словарей, упорядоченный по добавлению)
+        self._queue_items: list[dict] = []  # [{user_id, chat_id, message_id}, ...]
         self._queue_lock = threading.Lock()
 
     # --- Управление состоянием пользователя ---
@@ -81,18 +81,71 @@ class BotContext:
     # --- Отслеживание сообщений об очереди ---
 
     def add_queue_message(self, user_id: int, chat_id: int, message_id: int) -> None:
-        """Сохраняет ID сообщения об очереди для последующего удаления."""
+        """Добавляет элемент очереди и обновляет все сообщения о позициях."""
         with self._queue_lock:
-            self._queue_messages[user_id] = (chat_id, message_id)
+            self._queue_items.append({
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "message_id": message_id,
+            })
+        self._update_queue_messages()
 
     def remove_queue_message(self, user_id: int) -> None:
-        """Удаляет сообщение об очереди из чата."""
+        """Удаляет первый элемент очереди для пользователя, обновляет остальные."""
+        removed = None
         with self._queue_lock:
-            entry = self._queue_messages.pop(user_id, None)
-        if entry:
-            chat_id, message_id = entry
+            for i, item in enumerate(self._queue_items):
+                if item["user_id"] == user_id:
+                    removed = self._queue_items.pop(i)
+                    break
+        if removed:
             try:
-                self.bot.delete_message(chat_id, message_id)
+                self.bot.delete_message(removed["chat_id"], removed["message_id"])
+            except Exception:
+                pass
+            self._update_queue_messages()
+
+    def get_queue_info(self, user_id: int) -> tuple[int, int]:
+        """Возвращает (кол-во запросов пользователя в очереди, общая очередь)."""
+        with self._queue_lock:
+            total = len(self._queue_items)
+            user_count = sum(1 for item in self._queue_items if item["user_id"] == user_id)
+        return user_count, total
+
+    def _format_queue_text(self, user_count: int, total: int) -> str:
+        """Форматирует сообщение о позиции в очереди."""
+        from app.constants import EMOJI_HOURGLASS
+        if total <= 1 and user_count <= 1:
+            return f"{EMOJI_HOURGLASS} Ваш запрос в очереди.\nСкоро начнём скачивание..."
+        if user_count <= 1:
+            return (
+                f"{EMOJI_HOURGLASS} Ваш запрос в очереди на скачивание.\n"
+                f"Перед вами в очереди: {total - 1}"
+            )
+        return (
+            f"{EMOJI_HOURGLASS} Запрос в очереди на скачивание.\n"
+            f"Обрабатываем по одному видео.\n"
+            f"Ваша очередь: {user_count} | Общая очередь: {total}"
+        )
+
+    def _update_queue_messages(self) -> None:
+        """Обновляет текст всех сообщений о позициях в очереди."""
+        with self._queue_lock:
+            items = list(self._queue_items)
+        if not items:
+            return
+        total = len(items)
+        # Считаем количество запросов на каждого пользователя
+        user_counts: dict[int, int] = {}
+        for item in items:
+            uid = item["user_id"]
+            user_counts[uid] = user_counts.get(uid, 0) + 1
+        # Обновляем каждое сообщение
+        for item in items:
+            uid = item["user_id"]
+            text = self._format_queue_text(user_counts[uid], total)
+            try:
+                self.bot.edit_message_text(text, item["chat_id"], item["message_id"])
             except Exception:
                 pass
 
