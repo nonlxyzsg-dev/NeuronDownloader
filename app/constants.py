@@ -75,6 +75,12 @@ CB_DEVICE_IPHONE = "dev_i"
 # Перекодирование по запросу
 CB_REENCODE = "reenc"
 
+# Тогл перекодирования в клавиатуре выбора качества
+CB_TOGGLE_REENCODE = "tgre"
+
+# Смена устройства из клавиатуры выбора качества
+CB_DEVICE_INLINE = "devi"
+
 # Мгновенная отправка из кэша
 CB_CACHED_SEND = "csnd"
 

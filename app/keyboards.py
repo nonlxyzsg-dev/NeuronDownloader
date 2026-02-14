@@ -26,6 +26,7 @@ from app.constants import (
     CB_ADMIN_USER_UNBLOCK,
     CB_CACHED_SEND,
     CB_DEVICE_ANDROID,
+    CB_DEVICE_INLINE,
     CB_DEVICE_IPHONE,
     CB_DOWNLOAD,
     CB_INCIDENT_LIST,
@@ -38,6 +39,7 @@ from app.constants import (
     CB_TICKET_LIST,
     CB_TICKET_REPLY,
     CB_TICKET_VIEW,
+    CB_TOGGLE_REENCODE,
     CB_VIDEO_REPORT,
     EMOJI_AUDIO,
     EMOJI_BACK,
@@ -84,17 +86,21 @@ def build_format_keyboard(
     cached_format_ids: set[str] | None = None,
     has_cached_best: bool = False,
     has_cached_audio: bool = False,
+    reencode_on: bool = False,
+    device_label: str = "",
 ) -> types.InlineKeyboardMarkup:
     """Строит клавиатуру выбора качества в несколько столбцов.
 
     cached_format_ids — множество format_id, для которых есть кэш (мгновенная отправка).
+    reencode_on — включено ли принудительное перекодирование.
+    device_label — текущее устройство пользователя для кнопки смены.
     """
     cached = cached_format_ids or set()
     markup = types.InlineKeyboardMarkup(row_width=3)
 
     # Кнопки качества по 3 в ряд
     quality_buttons = []
-    for option in options[:TELEGRAM_MAX_BUTTONS_PER_KEYBOARD - 2]:
+    for option in options[:TELEGRAM_MAX_BUTTONS_PER_KEYBOARD - 4]:
         cb = _safe_callback_data(f"{CB_DOWNLOAD}|{token}|{option.format_id}")
         is_cached = option.format_id in cached
         icon = f"{EMOJI_ZAP}" if is_cached else f"{EMOJI_VIDEO}"
@@ -122,6 +128,27 @@ def build_format_keyboard(
             callback_data=_safe_callback_data(f"{CB_DOWNLOAD}|{token}|{FORMAT_AUDIO}"),
         ),
     )
+
+    # --- Нижний ряд: тогл перекодирования + смена устройства ---
+    if reencode_on:
+        reencode_text = "\U0001f7e2 H.264: \u0412\u041a\u041b"
+    else:
+        reencode_text = "\U0001f534 H.264: \u0412\u042b\u041a\u041b"
+
+    bottom_row = [
+        types.InlineKeyboardButton(
+            text=reencode_text,
+            callback_data=_safe_callback_data(f"{CB_TOGGLE_REENCODE}|{token}"),
+        ),
+    ]
+    if device_label:
+        bottom_row.append(
+            types.InlineKeyboardButton(
+                text=f"\U0001f4f1 {device_label}",
+                callback_data=_safe_callback_data(f"{CB_DEVICE_INLINE}|{token}"),
+            ),
+        )
+    markup.row(*bottom_row)
 
     return markup
 

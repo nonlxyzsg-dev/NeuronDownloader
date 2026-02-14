@@ -19,11 +19,13 @@ from app.constants import (
     ACTION_UPLOAD_AUDIO,
     ACTION_UPLOAD_VIDEO,
     CB_DEVICE_ANDROID,
+    CB_DEVICE_INLINE,
     CB_DEVICE_IPHONE,
     CB_DOWNLOAD,
     CB_REENCODE,
     CB_SPLIT_YES,
     CB_SPLIT_NO,
+    CB_TOGGLE_REENCODE,
     CB_VIDEO_REPORT,
     DEVICE_ANDROID,
     DEVICE_IPHONE,
@@ -81,6 +83,12 @@ def register_download_handlers(ctx) -> None:
 
     # Временное хранилище: токен перекодирования -> данные для повторной загрузки
     _reencode_meta: dict[str, dict] = {}
+
+    # Тогл перекодирования: токен запроса -> включено/выключено
+    _reencode_toggle: dict[str, bool] = {}
+
+    # Контекст запроса для перестроения клавиатуры: токен -> {url, options, ...}
+    _request_context: dict[str, dict] = {}
 
     def _send_media(
         user_id: int,
@@ -153,6 +161,7 @@ def register_download_handlers(ctx) -> None:
         status_message_id: int | None = None,
         audio_only: bool = False,
         reaction_message_id: int | None = None,
+        force_reencode: bool = False,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
@@ -398,45 +407,52 @@ def register_download_handlers(ctx) -> None:
                 if not audio_only:
                     original_codec = _get_video_codec(file_path)
                     logging.info(
-                        "Кодек видео: %s (устройство=%s, url=%s)",
+                        "Кодек видео: %s (устройство=%s, force_reencode=%s, url=%s)",
                         original_codec or "неизвестен",
-                        user_device or "не указано", url,
+                        user_device or "не указано", force_reencode, url,
                     )
                     # Определяем, нужна ли перекодировка
                     codec_ok = original_codec == "h264" if original_codec else True
-                    if not codec_ok:
-                        # iPhone или неизвестное устройство — перекодируем автоматически
-                        if user_device != DEVICE_ANDROID:
-                            size_mb = (total_bytes or 0) / (1024 * 1024)
-                            est_minutes = max(1, int(size_mb * 0.6))
-                            if progress_message_id:
-                                try:
-                                    bot.edit_message_text(
-                                        f"\U0001f504 Перекодируем видео в формат для iPhone "
-                                        f"(кодек {original_codec} \u2192 H.264)...\n"
-                                        f"\u23f3 Это может занять ~{est_minutes} мин.",
-                                        chat_id, progress_message_id,
-                                    )
-                                except Exception:
-                                    pass
-                            reencode_start = time.monotonic()
-                            file_path, was_reencoded, original_codec = ensure_h264(file_path)
-                            if was_reencoded:
-                                reencode_duration = time.monotonic() - reencode_start
-                                total_bytes = get_file_size(file_path)
-                                logging.info(
-                                    "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
-                                    reencode_duration,
-                                    format_bytes(total_bytes) if total_bytes else "неизвестно",
-                                    file_path,
+                    should_reencode = force_reencode or (
+                        not codec_ok and user_device != DEVICE_ANDROID
+                    )
+                    if should_reencode and not codec_ok:
+                        size_mb = (total_bytes or 0) / (1024 * 1024)
+                        est_minutes = max(1, int(size_mb * 0.6))
+                        reencode_reason = (
+                            "\u043f\u043e \u0432\u0430\u0448\u0435\u043c\u0443 \u0437\u0430\u043f\u0440\u043e\u0441\u0443"
+                            if force_reencode
+                            else "\u0434\u043b\u044f iPhone"
+                        )
+                        if progress_message_id:
+                            try:
+                                bot.edit_message_text(
+                                    f"\U0001f504 \u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u0443\u0435\u043c \u0432\u0438\u0434\u0435\u043e \u0432 H.264 "
+                                    f"({reencode_reason}, "
+                                    f"\u043a\u043e\u0434\u0435\u043a {original_codec} \u2192 H.264)...\n"
+                                    f"\u23f3 \u042d\u0442\u043e \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c ~{est_minutes} \u043c\u0438\u043d.",
+                                    chat_id, progress_message_id,
                                 )
-                        else:
-                            # Android — пропускаем перекодировку, пометим для кнопки
-                            needs_reencode = True
+                            except Exception:
+                                pass
+                        reencode_start = time.monotonic()
+                        file_path, was_reencoded, original_codec = ensure_h264(file_path)
+                        if was_reencoded:
+                            reencode_duration = time.monotonic() - reencode_start
+                            total_bytes = get_file_size(file_path)
                             logging.info(
-                                "Перекодировка пропущена (Android): кодек=%s, url=%s",
-                                original_codec, url,
+                                "\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0432 H.264 \u0437\u0430 %.2fs (\u043d\u043e\u0432\u044b\u0439 \u0440\u0430\u0437\u043c\u0435\u0440=%s, \u043f\u0443\u0442\u044c=%s)",
+                                reencode_duration,
+                                format_bytes(total_bytes) if total_bytes else "\u043d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e",
+                                file_path,
                             )
+                    elif not codec_ok and not force_reencode:
+                        # Android без force_reencode — пропускаем, пометим для кнопки
+                        needs_reencode = True
+                        logging.info(
+                            "\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u043a\u0430 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u0430 (Android): \u043a\u043e\u0434\u0435\u043a=%s, url=%s",
+                            original_codec, url,
+                        )
 
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
@@ -641,25 +657,57 @@ def register_download_handlers(ctx) -> None:
     # --- Обработчики выбора устройства ---
 
     @bot.callback_query_handler(
-        func=lambda call: call.data in (CB_DEVICE_ANDROID, CB_DEVICE_IPHONE)
+        func=lambda call: call.data and (
+            call.data.startswith(CB_DEVICE_ANDROID) or call.data.startswith(CB_DEVICE_IPHONE)
+        )
     )
     def handle_device_selection(call: types.CallbackQuery) -> None:
         ctx.ensure_user(call.from_user)
-        if call.data == CB_DEVICE_ANDROID:
+        parts = call.data.split("|", 1)
+        device_cb = parts[0]
+        inline_token = parts[1] if len(parts) > 1 else None
+
+        if device_cb == CB_DEVICE_ANDROID:
             device = DEVICE_ANDROID
+        else:
+            device = DEVICE_IPHONE
+        storage.set_user_device_type(call.from_user.id, device)
+
+        # Если выбор был из клавиатуры качества — возвращаем к выбору формата
+        if inline_token and inline_token in _request_context:
+            device_name = "Android" if device == DEVICE_ANDROID else "iPhone"
+            bot.answer_callback_query(
+                call.id, f"\u0423\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e: {device_name}",
+            )
+            reencode_on = _reencode_toggle.get(inline_token, False)
+            result = _rebuild_format_message(inline_token, reencode_on, call.from_user.id)
+            if result:
+                text, markup = result
+                try:
+                    bot.edit_message_text(
+                        text,
+                        call.message.chat.id,
+                        call.message.message_id,
+                        parse_mode="Markdown",
+                        reply_markup=markup,
+                    )
+                except Exception:
+                    pass
+            return
+
+        # Обычный выбор устройства (из /start или /device)
+        if device == DEVICE_ANDROID:
             response = (
                 "\U0001f4f1 Отлично, Android! Видео будут отправляться максимально быстро.\n\n"
                 "Если вам понадобится перекодировать видео для iPhone "
                 "(например, переслать другу), кнопка будет под видео."
             )
         else:
-            device = DEVICE_IPHONE
             response = (
                 "\U0001f34f Понял, iPhone! Видео с несовместимым кодеком будут "
                 "автоматически перекодироваться в H.264 перед отправкой.\n\n"
                 "Это может занять 1\u20133 минуты, но зато видео гарантированно воспроизведётся."
             )
-        storage.set_user_device_type(call.from_user.id, device)
         bot.answer_callback_query(call.id)
         try:
             bot.edit_message_text(
@@ -803,11 +851,32 @@ def register_download_handlers(ctx) -> None:
             else:
                 cached_format_ids.add(fmt_id)
         any_cached = bool(cached_format_ids) or has_cached_best or has_cached_audio
+
+        # Устройство и тогл перекодирования
+        user_device = storage.get_user_device_type(message.from_user.id)
+        device_label = {"android": "Android", "iphone": "iPhone"}.get(
+            user_device or "", "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u043e",
+        )
+        _reencode_toggle[token] = False  # по умолчанию выключено
+
+        # Сохраняем контекст для перестроения клавиатуры при тогле
+        _request_context[token] = {
+            "url": url,
+            "title": title,
+            "options": options,
+            "cached_format_ids": cached_format_ids,
+            "has_cached_best": has_cached_best,
+            "has_cached_audio": has_cached_audio,
+            "subscribed": subscribed,
+        }
+
         markup = build_format_keyboard(
             token, options,
             cached_format_ids=cached_format_ids,
             has_cached_best=has_cached_best,
             has_cached_audio=has_cached_audio,
+            reencode_on=False,
+            device_label=device_label,
         )
         note = ""
         if not subscribed:
@@ -817,12 +886,18 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
+        reencode_hint = (
+            "\n\n\U0001f534 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0441\u0435\u0439\u0447\u0430\u0441 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
+            "\u0415\u0441\u043b\u0438 \u0432\u0438\u0434\u0435\u043e \u043d\u0435 \u0432\u043e\u0441\u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u043d\u0430 iPhone \u2014 "
+            "\u0432\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u043d\u0438\u0436\u0435."
+        )
         sent = bot.send_message(
             message.chat.id,
             (
                 f"{note}**\u041d\u0430\u0448\u043b\u0438 \u0432\u0438\u0434\u0435\u043e:** {title}\n"
                 "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u043d\u0438\u0436\u0435 \u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 *\u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435* / *\u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a*."
                 f"{cache_hint}"
+                f"{reencode_hint}"
             ),
             parse_mode="Markdown",
             reply_markup=markup,
@@ -866,6 +941,8 @@ def register_download_handlers(ctx) -> None:
         bot.answer_callback_query(call.id, "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c.")
         selected_format = None if format_id in (FORMAT_BEST, FORMAT_AUDIO) else format_id
         audio_only = format_id == FORMAT_AUDIO
+        force_reencode = _reencode_toggle.pop(token, False)
+        _request_context.pop(token, None)
         queue_download(
             call.from_user.id,
             call.message.chat.id,
@@ -875,17 +952,131 @@ def register_download_handlers(ctx) -> None:
             status_message_id=call.message.message_id,
             audio_only=audio_only,
             reaction_message_id=reaction_message_id,
+            force_reencode=force_reencode,
         )
         storage.delete_request(token)
         try:
+            reencode_hint = ""
+            if force_reencode and not audio_only:
+                reencode_hint = " + \u043f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264"
             bot.edit_message_text(
-                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438\u2026",
+                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438{reencode_hint}\u2026",
                 call.message.chat.id,
                 call.message.message_id,
             )
         except Exception:
             pass
         storage.set_last_inline_message_id(call.from_user.id, None)
+
+    # --- Тогл перекодирования в клавиатуре ---
+
+    def _rebuild_format_message(token: str, reencode_on: bool, user_id: int) -> tuple[str, types.InlineKeyboardMarkup] | None:
+        """Перестраивает текст и клавиатуру выбора качества."""
+        rctx = _request_context.get(token)
+        if not rctx:
+            return None
+        user_device = storage.get_user_device_type(user_id)
+        device_label = {"android": "Android", "iphone": "iPhone"}.get(
+            user_device or "", "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u043e",
+        )
+        markup = build_format_keyboard(
+            token, rctx["options"],
+            cached_format_ids=rctx["cached_format_ids"],
+            has_cached_best=rctx["has_cached_best"],
+            has_cached_audio=rctx["has_cached_audio"],
+            reencode_on=reencode_on,
+            device_label=device_label,
+        )
+        any_cached = bool(rctx["cached_format_ids"]) or rctx["has_cached_best"] or rctx["has_cached_audio"]
+        note = ""
+        if not rctx["subscribed"]:
+            free_limit = ctx.get_free_limit()
+            free_window = ctx.get_free_window()
+            note = f"{format_limit_message(free_limit, free_window)}\n\n"
+        cache_hint = ""
+        if any_cached:
+            cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
+        if reencode_on:
+            reencode_hint = (
+                "\n\n\U0001f7e2 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0432\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
+                "\u0412\u0438\u0434\u0435\u043e \u0431\u0443\u0434\u0435\u0442 \u043f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0432 H.264 \u043f\u043e\u0441\u043b\u0435 \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u044f "
+                "(\u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c 1\u20143 \u043c\u0438\u043d.)."
+            )
+        else:
+            reencode_hint = (
+                "\n\n\U0001f534 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0441\u0435\u0439\u0447\u0430\u0441 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
+                "\u0415\u0441\u043b\u0438 \u0432\u0438\u0434\u0435\u043e \u043d\u0435 \u0432\u043e\u0441\u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u043d\u0430 iPhone \u2014 "
+                "\u0432\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u043d\u0438\u0436\u0435."
+            )
+        text = (
+            f"{note}**\u041d\u0430\u0448\u043b\u0438 \u0432\u0438\u0434\u0435\u043e:** {rctx['title']}\n"
+            "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u043d\u0438\u0436\u0435 \u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 *\u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435* / *\u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a*."
+            f"{cache_hint}"
+            f"{reencode_hint}"
+        )
+        return text, markup
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data and call.data.startswith(f"{CB_TOGGLE_REENCODE}|")
+    )
+    def handle_toggle_reencode(call: types.CallbackQuery) -> None:
+        """Переключает тогл принудительного перекодирования."""
+        token = call.data.split("|", 1)[1]
+        if token not in _request_context:
+            bot.answer_callback_query(call.id, "\u0417\u0430\u043f\u0440\u043e\u0441 \u0443\u0441\u0442\u0430\u0440\u0435\u043b")
+            return
+        current = _reencode_toggle.get(token, False)
+        new_state = not current
+        _reencode_toggle[token] = new_state
+        result = _rebuild_format_message(token, new_state, call.from_user.id)
+        if result:
+            text, markup = result
+            try:
+                bot.edit_message_text(
+                    text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode="Markdown",
+                    reply_markup=markup,
+                )
+            except Exception:
+                pass
+        status = "\u0412\u041a\u041b" if new_state else "\u0412\u042b\u041a\u041b"
+        bot.answer_callback_query(call.id, f"\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435: {status}")
+
+    # --- Смена устройства из клавиатуры выбора качества ---
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data and call.data.startswith(f"{CB_DEVICE_INLINE}|")
+    )
+    def handle_device_inline(call: types.CallbackQuery) -> None:
+        """Показывает выбор устройства прямо из клавиатуры качества."""
+        token = call.data.split("|", 1)[1]
+        if token not in _request_context:
+            bot.answer_callback_query(call.id, "\u0417\u0430\u043f\u0440\u043e\u0441 \u0443\u0441\u0442\u0430\u0440\u0435\u043b")
+            return
+        bot.answer_callback_query(call.id)
+        # Показываем выбор устройства с привязкой к токену
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.row(
+            types.InlineKeyboardButton(
+                text="\U0001f4f1 Android",
+                callback_data=f"{CB_DEVICE_ANDROID}|{token}",
+            ),
+            types.InlineKeyboardButton(
+                text="\U0001f34f iPhone / iPad",
+                callback_data=f"{CB_DEVICE_IPHONE}|{token}",
+            ),
+        )
+        try:
+            bot.edit_message_text(
+                "\U0001f4f1 \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup,
+            )
+        except Exception:
+            pass
 
     # --- Обработчики разделения видео ---
 
