@@ -218,7 +218,7 @@ def register_download_handlers(ctx) -> None:
                 if progress_message_id:
                     try:
                         bot.edit_message_text(
-                            f"{EMOJI_DOWNLOAD} Скачивание: 0.0% • 0 B/s",
+                            f"{EMOJI_HOURGLASS} Подготовка загрузки\u2026",
                             chat_id,
                             progress_message_id,
                         )
@@ -228,7 +228,7 @@ def register_download_handlers(ctx) -> None:
                     try:
                         sent = bot.send_message(
                             chat_id,
-                            f"{EMOJI_DOWNLOAD} Скачивание: 0.0% • 0 B/s",
+                            f"{EMOJI_HOURGLASS} Подготовка загрузки\u2026",
                         )
                         progress_message_id = sent.message_id
                     except Exception:
@@ -290,6 +290,14 @@ def register_download_handlers(ctx) -> None:
                             )
 
                 # Запасной вариант: скачиваем в файл
+                if progress_message_id:
+                    try:
+                        bot.edit_message_text(
+                            f"{EMOJI_DOWNLOAD} Скачивание\u2026",
+                            chat_id, progress_message_id,
+                        )
+                    except Exception:
+                        pass
                 file_path, info = downloader.download(
                     url, selected_format,
                     audio_only=audio_only,
