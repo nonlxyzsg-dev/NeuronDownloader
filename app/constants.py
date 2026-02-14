@@ -75,6 +75,9 @@ CB_DEVICE_IPHONE = "dev_i"
 # Перекодирование по запросу
 CB_REENCODE = "reenc"
 
+# Мгновенная отправка из кэша
+CB_CACHED_SEND = "csnd"
+
 # Типы устройств
 DEVICE_ANDROID = "android"
 DEVICE_IPHONE = "iphone"

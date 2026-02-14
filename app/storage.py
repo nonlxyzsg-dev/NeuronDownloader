@@ -149,6 +149,25 @@ class Storage:
                 )
                 """
             )
+            # --- Кэш file_id Telegram ---
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL,
+                    format_id TEXT,
+                    reencoded INTEGER DEFAULT 0,
+                    audio_only INTEGER DEFAULT 0,
+                    telegram_file_id TEXT NOT NULL,
+                    codec TEXT,
+                    resolution TEXT,
+                    file_size INTEGER,
+                    platform TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(url, format_id, reencoded, audio_only)
+                )
+                """
+            )
 
     # --- Ожидающие запросы ---
 
@@ -559,3 +578,67 @@ class Storage:
             return conn.execute(
                 "SELECT COUNT(*) FROM video_incidents WHERE status IN ('reported', 'in_progress')"
             ).fetchone()[0]
+
+    # --- Кэш file_id Telegram ---
+
+    def cache_file(
+        self,
+        url: str,
+        format_id: str | None,
+        reencoded: bool,
+        audio_only: bool,
+        telegram_file_id: str,
+        codec: str | None = None,
+        resolution: str | None = None,
+        file_size: int | None = None,
+        platform: str | None = None,
+    ) -> None:
+        """Сохраняет file_id от Telegram для повторной отправки."""
+        fmt = format_id or "best"
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO file_cache
+                    (url, format_id, reencoded, audio_only, telegram_file_id, codec, resolution, file_size, platform)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url, format_id, reencoded, audio_only)
+                DO UPDATE SET telegram_file_id = excluded.telegram_file_id,
+                              file_size = excluded.file_size,
+                              created_at = CURRENT_TIMESTAMP
+                """,
+                (url, fmt, 1 if reencoded else 0, 1 if audio_only else 0,
+                 telegram_file_id, codec, resolution, file_size, platform),
+            )
+
+    def get_cached_file(
+        self,
+        url: str,
+        format_id: str | None,
+        reencoded: bool,
+        audio_only: bool,
+    ) -> str | None:
+        """Возвращает telegram_file_id из кэша или None."""
+        fmt = format_id or "best"
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT telegram_file_id FROM file_cache "
+                "WHERE url = ? AND format_id = ? AND reencoded = ? AND audio_only = ?",
+                (url, fmt, 1 if reencoded else 0, 1 if audio_only else 0),
+            )
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def get_cached_formats(self, url: str) -> list[tuple[str, int, int]]:
+        """Возвращает список кэшированных форматов: [(format_id, reencoded, audio_only), ...]."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT format_id, reencoded, audio_only FROM file_cache WHERE url = ?",
+                (url,),
+            )
+            return cur.fetchall()
+
+    def get_file_cache_stats(self) -> tuple[int, int]:
+        """Возвращает (количество записей в кэше, экономия загрузок)."""
+        with self._connect() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM file_cache").fetchone()[0]
+        return count, 0
