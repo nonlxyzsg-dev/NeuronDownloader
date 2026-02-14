@@ -30,7 +30,7 @@ from app.constants import (
     EMOJI_ZAP,
     FORMAT_AUDIO,
     FORMAT_BEST,
-    MENU_HELP,
+    MENU_ADMIN,
     STATUS_FAILED,
     STATUS_SUCCESS,
     TELEGRAM_MAX_FILE_SIZE,
@@ -49,6 +49,7 @@ from app.utils import (
     format_limit_message,
     format_speed,
     get_file_size,
+    is_admin,
     is_youtube_url,
     notify_admin_error,
     send_with_retry,
@@ -425,22 +426,45 @@ def register_download_handlers(ctx) -> None:
             return
         ctx.clear_last_inline(message.from_user.id, message.chat.id)
         ctx.set_user_state(message.from_user.id, None)
+        user_is_admin = is_admin(message.from_user.id)
         bot.send_message(
             message.chat.id,
             (
-                "\u041f\u0440\u0438\u0432\u0435\u0442! \u042f \u0431\u043e\u0442 \u0434\u043b\u044f \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u044f \u0432\u0438\u0434\u0435\u043e \u2014 \u0431\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u044c \u043f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u0430\u043c "
-                "\u043a\u0430\u043d\u0430\u043b\u0430 \u00ab\u0411\u0430\u043d\u043a\u0430 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438\u00bb \U0001f9e0\n\n"
-                "\u041f\u0440\u043e\u0441\u0442\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u043c\u043d\u0435 \u0441\u0441\u044b\u043b\u043a\u0443 \u043d\u0430 \u0432\u0438\u0434\u0435\u043e \u0438\u0437 YouTube, Instagram \u0438\u043b\u0438 VK, "
-                "\u0438 \u044f \u043f\u0440\u0435\u0434\u043b\u043e\u0436\u0443 \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u044b \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u0430.\n\n"
-                "\u041f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u0438 \u043a\u0430\u043d\u0430\u043b\u0430 \u043f\u043e\u043b\u0443\u0447\u0430\u044e\u0442 \u0431\u0435\u0437\u043b\u0438\u043c\u0438\u0442\u043d\u044b\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438!\n\n"
-                "\u0415\u0441\u043b\u0438 \u0432\u043e\u0437\u043d\u0438\u043a\u043d\u0443\u0442 \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u044b \u2014 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u00ab\U0001f4dd \u0421\u043e\u043e\u0431\u0449\u0438\u0442\u044c \u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0435\u00bb."
+                "\U0001f4be \u041f\u0440\u0438\u0432\u0435\u0442! \u042f \u2014 \u041d\u0435\u0439\u0440\u043e\u043d-Downloader, "
+                "\u0447\u0430\u0441\u0442\u044c \u044d\u043a\u043e\u0441\u0438\u0441\u0442\u0435\u043c\u044b "
+                "\u00ab\u0411\u0430\u043d\u043a\u0438 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438\u00bb \U0001f9e0\n\n"
+                "\u041c\u043e\u044f \u0440\u0430\u0431\u043e\u0442\u0430 \u2014 \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u0442\u044c \u0432\u0438\u0434\u0435\u043e. "
+                "YouTube, VK \u0412\u0438\u0434\u0435\u043e, Rutube, Instagram, TikTok \u2014 "
+                "\u043f\u0440\u043e\u0441\u0442\u043e \u043a\u0438\u0434\u0430\u0439\u0442\u0435 \u0441\u0441\u044b\u043b\u043a\u0443.\n\n"
+                "\u0411\u043e\u0442 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0434\u043b\u044f \u0432\u0441\u0435\u0445, "
+                "\u043d\u043e \u0443 \u043f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u043e\u0432 \u043a\u0430\u043d\u0430\u043b\u0430 "
+                "\u043d\u0435\u0442 \u043d\u0438\u043a\u0430\u043a\u0438\u0445 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0439 \u2014 "
+                "\u044d\u0442\u043e \u043d\u0430\u0448\u0435 \u0441\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443, "
+                "\u0440\u0435\u0430\u043a\u0446\u0438\u0438, \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438 \u0438 \u0433\u043e\u043b\u043e\u0441\u0430. "
+                "\u0412\u044b \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0435 \u043a\u0430\u043d\u0430\u043b \u2014 "
+                "\u043d\u0435\u0439\u0440\u043e\u043d\u044b \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044e\u0442 \u0432\u0430\u0441.\n\n"
+                "\u041f\u043e\u043a\u0430 \u043d\u0435 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u044b? "
+                "\u041f\u0440\u0438\u0441\u043e\u0435\u0434\u0438\u043d\u044f\u0439\u0442\u0435\u0441\u044c \u2014 "
+                "\u0438 \u043b\u0438\u043c\u0438\u0442\u044b \u0438\u0441\u0447\u0435\u0437\u043d\u0443\u0442.\n\n"
+                "\U0001f4dd \u0421\u043e\u043e\u0431\u0449\u0438\u0442\u044c \u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0435 \u2014 "
+                "\u0435\u0441\u043b\u0438 \u0447\u0442\u043e-\u0442\u043e \u043f\u043e\u0448\u043b\u043e \u043d\u0435 \u0442\u0430\u043a."
             ),
-            reply_markup=build_main_menu(),
+            reply_markup=build_main_menu(is_admin=user_is_admin),
         )
 
-    @bot.message_handler(func=lambda msg: msg.text == MENU_HELP)
-    def handle_help(message: types.Message) -> None:
-        send_welcome(message)
+    @bot.message_handler(func=lambda msg: msg.text == MENU_ADMIN and is_admin(msg.from_user.id))
+    def handle_admin_button(message: types.Message) -> None:
+        """Обработчик кнопки «Админ-панель» из reply-меню."""
+        ctx.ensure_user(message.from_user)
+        ctx.clear_last_inline(message.from_user.id, message.chat.id)
+        open_tickets = storage.count_open_tickets()
+        from app.keyboards import build_admin_menu
+        markup = build_admin_menu(open_tickets=open_tickets)
+        bot.send_message(
+            message.chat.id,
+            "\u2699\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0430",
+            reply_markup=markup,
+        )
 
     @bot.message_handler(func=lambda msg: msg.text is not None)
     def handle_link(message: types.Message) -> None:
