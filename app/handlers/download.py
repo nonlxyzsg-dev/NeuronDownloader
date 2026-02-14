@@ -73,9 +73,10 @@ def register_download_handlers(ctx) -> None:
         title: str,
         audio_only: bool,
         file_size: int | None = None,
+        video_tag: str = "",
     ) -> None:
         """Отправляет аудио/видео пользователю с логикой повторных попыток."""
-        caption = format_caption(title)
+        caption = format_caption(title, video_tag=video_tag)
         bot.send_chat_action(
             chat_id,
             ACTION_UPLOAD_AUDIO if audio_only else ACTION_UPLOAD_VIDEO,
@@ -643,45 +644,60 @@ def register_download_handlers(ctx) -> None:
         audio_only = pending["audio_only"]
         user_id = pending["user_id"]
         chat_id = pending["chat_id"]
-        try:
-            bot.edit_message_text(
-                f"{EMOJI_HOURGLASS} \u0420\u0430\u0437\u0434\u0435\u043b\u044f\u0435\u043c \u0432\u0438\u0434\u0435\u043e \u043d\u0430 \u0447\u0430\u0441\u0442\u0438\u2026",
-                call.message.chat.id,
-                call.message.message_id,
-            )
-        except Exception:
-            pass
-        parts = downloader.split_video(file_path, TELEGRAM_SPLIT_TARGET_SIZE)
-        total_parts = len(parts)
-        for i, part_path in enumerate(parts, 1):
-            part_title = f"{title} (\u0447\u0430\u0441\u0442\u044c {i}/{total_parts})"
-            part_size = get_file_size(part_path)
+        msg_id = call.message.message_id
+
+        def _split_job() -> None:
             try:
-                with open(part_path, "rb") as handle:
-                    _send_media(
-                        user_id, chat_id, handle, part_title,
-                        audio_only, file_size=part_size,
-                    )
+                bot.edit_message_text(
+                    f"{EMOJI_HOURGLASS} \u0420\u0430\u0437\u0434\u0435\u043b\u044f\u0435\u043c \u0432\u0438\u0434\u0435\u043e \u043d\u0430 \u0447\u0430\u0441\u0442\u0438\u2026",
+                    chat_id, msg_id,
+                )
             except Exception:
-                logging.exception("Не удалось отправить часть %d/%d", i, total_parts)
-            finally:
+                pass
+            parts = downloader.split_video(file_path, TELEGRAM_SPLIT_TARGET_SIZE)
+            total_parts = len(parts)
+            video_tag = f"#nd_{uuid.uuid4().hex[:6]}" if total_parts > 1 else ""
+            for i, part_path in enumerate(parts, 1):
+                part_title = f"{title} (\u0447\u0430\u0441\u0442\u044c {i}/{total_parts})"
+                part_size = get_file_size(part_path)
                 try:
-                    os.remove(part_path)
-                except OSError:
-                    pass
-        # Удаляем исходный файл
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+                    with open(part_path, "rb") as handle:
+                        _send_media(
+                            user_id, chat_id, handle, part_title,
+                            audio_only, file_size=part_size,
+                            video_tag=video_tag,
+                        )
+                except Exception:
+                    logging.exception("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0447\u0430\u0441\u0442\u044c %d/%d", i, total_parts)
+                finally:
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+            # Удаляем исходный файл
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            try:
+                bot.edit_message_text(
+                    f"{EMOJI_DONE} \u0412\u0438\u0434\u0435\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u0432 {total_parts} \u0447\u0430\u0441\u0442\u044f\u0445.",
+                    chat_id, msg_id,
+                )
+            except Exception:
+                pass
+
         try:
             bot.edit_message_text(
-                f"{EMOJI_DONE} \u0412\u0438\u0434\u0435\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043e \u0432 {total_parts} \u0447\u0430\u0441\u0442\u044f\u0445.",
-                call.message.chat.id,
-                call.message.message_id,
+                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438\u2026",
+                chat_id, msg_id,
             )
         except Exception:
             pass
+        try:
+            download_manager.submit_user(user_id, _split_job)
+        except queue.Full:
+            bot.send_message(chat_id, "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.")
 
     @bot.callback_query_handler(
         func=lambda call: call.data and call.data.startswith(f"{CB_SPLIT_NO}|")
