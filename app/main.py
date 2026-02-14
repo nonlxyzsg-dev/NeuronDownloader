@@ -115,16 +115,8 @@ class BotContext:
     def _format_queue_text(self, user_count: int, total: int) -> str:
         """Форматирует сообщение о позиции в очереди."""
         from app.constants import EMOJI_HOURGLASS
-        if total <= 1 and user_count <= 1:
-            return f"{EMOJI_HOURGLASS} Ваш запрос в очереди.\nСкоро начнём скачивание..."
-        if user_count <= 1:
-            return (
-                f"{EMOJI_HOURGLASS} Ваш запрос в очереди на скачивание.\n"
-                f"Перед вами в очереди: {total - 1}"
-            )
         return (
             f"{EMOJI_HOURGLASS} Запрос в очереди на скачивание.\n"
-            f"Обрабатываем по одному видео.\n"
             f"Ваша очередь: {user_count} | Общая очередь: {total}"
         )
 
