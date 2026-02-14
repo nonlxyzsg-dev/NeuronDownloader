@@ -340,6 +340,60 @@ class VideoDownloader:
                 return option.format_id
         return None
 
+    def split_video(self, file_path: str, max_size: int = 45 * 1024 * 1024) -> list[str]:
+        """Split video into parts of approximately max_size bytes using FFmpeg."""
+        import math
+        import subprocess
+
+        file_size = os.path.getsize(file_path)
+        if file_size <= max_size:
+            return [file_path]
+
+        # Get duration via ffprobe
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    file_path,
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            duration = float(result.stdout.strip())
+        except Exception:
+            logging.exception("ffprobe failed for %s", file_path)
+            return [file_path]
+
+        if duration <= 0:
+            return [file_path]
+
+        num_parts = math.ceil(file_size / max_size)
+        segment_duration = duration / num_parts
+        base, ext = os.path.splitext(file_path)
+
+        parts = []
+        for i in range(num_parts):
+            start = i * segment_duration
+            part_path = f"{base}_part{i + 1}{ext}"
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-i", file_path,
+                        "-ss", str(start), "-t", str(segment_duration),
+                        "-c", "copy", part_path,
+                    ],
+                    capture_output=True, timeout=120,
+                )
+                if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
+                    parts.append(part_path)
+                else:
+                    logging.warning("Split part %d empty or missing: %s", i + 1, part_path)
+            except Exception:
+                logging.exception("FFmpeg split failed for part %d of %s", i + 1, file_path)
+
+        return parts if parts else [file_path]
+
     def get_latest_entry(self, channel_url: str) -> dict | None:
         ydl_opts = self._base_opts(skip_download=True)
         ydl_opts["extract_flat"] = True

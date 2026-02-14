@@ -28,7 +28,6 @@ from app.downloader import VideoDownloader
 from app.handlers import register_all_handlers
 from app.logger import setup_logging
 from app.storage import Storage
-from app.subscriptions import SubscriptionMonitor
 from app.cleanup import DataCleanupMonitor
 from app.utils import (
     ActiveDownloads,
@@ -56,6 +55,63 @@ class BotContext:
         self.membership_cache = membership_cache
         self.active_downloads = active_downloads
         self.shutdown_requested = False
+        # User/admin state machine
+        self._user_states: dict[int, object] = {}
+        self._user_states_lock = threading.Lock()
+        # Queue message tracking
+        self._queue_messages: dict[int, tuple[int, int]] = {}
+        self._queue_lock = threading.Lock()
+
+    # --- User state management ---
+
+    def get_user_state(self, user_id: int):
+        with self._user_states_lock:
+            return self._user_states.get(user_id)
+
+    def set_user_state(self, user_id: int, state) -> None:
+        with self._user_states_lock:
+            if state is None:
+                self._user_states.pop(user_id, None)
+            else:
+                self._user_states[user_id] = state
+
+    # --- Queue message tracking ---
+
+    def add_queue_message(self, user_id: int, chat_id: int, message_id: int) -> None:
+        with self._queue_lock:
+            self._queue_messages[user_id] = (chat_id, message_id)
+
+    def remove_queue_message(self, user_id: int) -> None:
+        with self._queue_lock:
+            entry = self._queue_messages.pop(user_id, None)
+        if entry:
+            chat_id, message_id = entry
+            try:
+                self.bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+
+    # --- Dynamic settings ---
+
+    def get_free_limit(self) -> int:
+        val = self.storage.get_setting("free_download_limit")
+        if val is not None:
+            try:
+                return int(val)
+            except ValueError:
+                pass
+        return FREE_DOWNLOAD_LIMIT
+
+    def get_free_window(self) -> int:
+        val = self.storage.get_setting("free_download_window")
+        if val is not None:
+            try:
+                return int(val)
+            except ValueError:
+                pass
+        return FREE_DOWNLOAD_WINDOW_SECONDS
+
+    # --- Core helpers ---
 
     def ensure_user(self, user: types.User) -> None:
         self.storage.upsert_user(
@@ -79,15 +135,12 @@ class BotContext:
 
     def check_access(self, user_id: int, chat_id: int) -> bool:
         if self.storage.is_blocked(user_id):
-            self.bot.send_message(chat_id, "Вы заблокированы.")
+            self.bot.send_message(chat_id, "\u0412\u044b \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b.")
             return False
         return True
 
     def is_required_member(self, user_id: int) -> bool:
-        """Check if user is a member of ALL required chats (with caching).
-
-        Returns False if any check fails (API error or not a member).
-        """
+        """Check if user is a member of ALL required chats (with caching)."""
         if is_admin(user_id):
             return True
         if not REQUIRED_CHAT_IDS:
@@ -102,7 +155,6 @@ class BotContext:
                 member = self.bot.get_chat_member(required_chat, user_id)
                 is_member = member.status not in ("left", "kicked")
             except Exception:
-                # API error = treat as not a member (conservative)
                 is_member = False
             self.membership_cache.set(required_chat, user_id, is_member)
             if not is_member:
@@ -113,9 +165,10 @@ class BotContext:
         if self.is_required_member(user_id):
             return False
         now_ts = int(datetime.now(timezone.utc).timestamp())
-        start_ts = now_ts - FREE_DOWNLOAD_WINDOW_SECONDS
+        free_window = self.get_free_window()
+        start_ts = now_ts - free_window
         used = self.storage.count_free_downloads_since(user_id, start_ts)
-        return used >= FREE_DOWNLOAD_LIMIT
+        return used >= self.get_free_limit()
 
 
 def main() -> None:
@@ -145,12 +198,10 @@ def main() -> None:
         active_downloads=active_downloads,
     )
 
-    monitor = SubscriptionMonitor(bot, storage, downloader, download_manager)
-    monitor.start()
     cleanup_monitor = DataCleanupMonitor()
     cleanup_monitor.start()
 
-    # Register all handlers (admin first, then subscription, then download/catch-all)
+    # Register all handlers (admin first, then support, then download/catch-all)
     register_all_handlers(ctx)
 
     # --- Shutdown handling ---
@@ -166,7 +217,6 @@ def main() -> None:
             bot.stop_polling()
         except Exception as e:
             logging.debug("Error stopping bot polling: %s", e)
-        monitor.stop()
         download_manager.shutdown()
         cleanup_monitor.stop()
         logging.info("All components stopped")
