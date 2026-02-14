@@ -41,6 +41,7 @@ from app.keyboards import (
     build_main_menu,
     build_split_confirm_keyboard,
 )
+from app.downloader import ensure_h264
 from app.utils import (
     append_youtube_client_hint,
     format_bytes,
@@ -311,6 +312,28 @@ def register_download_handlers(ctx) -> None:
                     format_bytes(total_bytes) if total_bytes else "неизвестно",
                     file_path, url,
                 )
+
+                # Перекодируем видео в H.264, если кодек несовместим с Apple
+                if not audio_only:
+                    if progress_message_id:
+                        try:
+                            bot.edit_message_text(
+                                f"{EMOJI_DONE} Скачано. Проверяем совместимость\u2026",
+                                chat_id, progress_message_id,
+                            )
+                        except Exception:
+                            pass
+                    reencode_start = time.monotonic()
+                    file_path, was_reencoded = ensure_h264(file_path)
+                    if was_reencoded:
+                        reencode_duration = time.monotonic() - reencode_start
+                        total_bytes = get_file_size(file_path)
+                        logging.info(
+                            "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
+                            reencode_duration,
+                            format_bytes(total_bytes) if total_bytes else "неизвестно",
+                            file_path,
+                        )
 
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
