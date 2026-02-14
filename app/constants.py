@@ -1,36 +1,36 @@
-"""Shared constants used across the bot."""
+"""Общие константы, используемые во всём боте."""
 
-# --- Telegram limits ---
-TELEGRAM_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB for bot uploads
-TELEGRAM_SPLIT_TARGET_SIZE = 45 * 1024 * 1024  # 45 MB target for split parts
+# --- Лимиты Telegram ---
+TELEGRAM_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ — лимит загрузки через бот
+TELEGRAM_SPLIT_TARGET_SIZE = 45 * 1024 * 1024  # 45 МБ — целевой размер частей при разделении
 TELEGRAM_CAPTION_MAX_LENGTH = 1024
 TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64
 TELEGRAM_MAX_BUTTONS_PER_KEYBOARD = 100
 
-# --- Upload retry settings ---
+# --- Настройки повторных попыток загрузки ---
 UPLOAD_MAX_RETRIES = 3
-UPLOAD_RETRY_DELAYS = (2, 5, 10)  # seconds between retries
+UPLOAD_RETRY_DELAYS = (2, 5, 10)  # секунды между попытками
 
-# --- Download timeout (seconds) ---
-DOWNLOAD_TIMEOUT_SECONDS = 600  # 10 minutes
+# --- Таймаут скачивания (секунды) ---
+DOWNLOAD_TIMEOUT_SECONDS = 600  # 10 минут
 
-# --- Membership cache TTL (seconds) ---
-MEMBERSHIP_CACHE_TTL = 300  # 5 minutes
+# --- TTL кэша подписок (секунды) ---
+MEMBERSHIP_CACHE_TTL = 300  # 5 минут
 
-# --- Preferred output format for video (avoids webm issues in Telegram) ---
+# --- Предпочтительный формат видео (избегаем проблем с webm в Telegram) ---
 PREFERRED_VIDEO_FORMAT = "mp4"
 
-# --- Bot signature for captions ---
+# --- Подпись бота для подписей к медиа ---
 BOT_SIGNATURE = "\u0421\u043a\u0430\u0447\u0430\u043b \u0434\u043b\u044f \u0412\u0430\u0441 @NeuronDownloader_Bot"
 
-# --- Callback data prefixes ---
+# --- Префиксы callback-данных ---
 CB_DOWNLOAD = "dl"
 
-# Large video split
+# Разделение больших видео
 CB_SPLIT_YES = "split_y"
 CB_SPLIT_NO = "split_n"
 
-# Admin panel
+# Админ-панель
 CB_ADMIN = "adm"
 CB_ADMIN_STATS = "adm_st"
 CB_ADMIN_STATS_PLATFORM = "adm_stp"
@@ -50,17 +50,18 @@ CB_ADMIN_SET_WINDOW = "adm_sw"
 CB_ADMIN_CHANNELS = "adm_ch"
 CB_ADMIN_CHANNEL_ADD = "adm_cha"
 CB_ADMIN_CHANNEL_DEL = "adm_chd"
+CB_ADMIN_LOGS = "adm_log"
 
-# Support tickets
+# Обращения (тикеты поддержки)
 CB_TICKET_VIEW = "tik_v"
 CB_TICKET_REPLY = "tik_r"
 CB_TICKET_CLOSE = "tik_c"
 CB_TICKET_LIST = "tik_l"
 
-# Channel videos
+# Видео канала
 CB_CHANNEL_VIDEOS = "chvid"
 
-# --- Emojis ---
+# --- Эмодзи ---
 EMOJI_VIDEO = "\U0001f3ac"       # 🎬
 EMOJI_BEST = "\U0001f680"        # 🚀
 EMOJI_AUDIO = "\U0001f3a7"       # 🎧
@@ -79,27 +80,29 @@ EMOJI_REPORT = "\U0001f4dd"     # 📝
 EMOJI_RESTART = "\U0001f504"    # 🔄
 EMOJI_CHANNEL = "\U0001f4e2"    # 📢
 EMOJI_ALERT = "\U0001f6a8"      # 🚨
+EMOJI_LOGS = "\U0001f4cb"       # 📋
 
-# --- Chat action types ---
+# --- Типы действий в чате ---
 ACTION_UPLOAD_VIDEO = "upload_video"
 ACTION_UPLOAD_AUDIO = "upload_audio"
 ACTION_TYPING = "typing"
 
-# --- Download statuses ---
+# --- Статусы загрузки ---
 STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 
-# --- Format identifiers ---
+# --- Идентификаторы форматов ---
 FORMAT_BEST = "best"
 FORMAT_AUDIO = "audio"
 
-# --- Menu button labels ---
+# --- Надписи на кнопках меню ---
 MENU_HELP = "\u2139\ufe0f \u041f\u043e\u043c\u043e\u0449\u044c"  # ℹ️ Помощь
 MENU_REPORT = "\U0001f4dd \u0421\u043e\u043e\u0431\u0449\u0438\u0442\u044c \u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0435"  # 📝 Сообщить о проблеме
 
-# --- User/admin states ---
+# --- Состояния пользователя/админа ---
 STATE_AWAITING_REPORT = "awaiting_report"
 STATE_AWAITING_LIMIT = "awaiting_limit"
 STATE_AWAITING_WINDOW = "awaiting_window"
 STATE_AWAITING_CHANNEL_ID = "awaiting_channel_id"
 STATE_REPLYING_TICKET = "replying_ticket"
+STATE_AWAITING_LOG_LINES = "awaiting_log_lines"

@@ -1,4 +1,4 @@
-"""Telegram keyboard builders."""
+"""Построение Telegram-клавиатур (инлайн и reply)."""
 
 import logging
 
@@ -8,6 +8,7 @@ from app.constants import (
     CB_ADMIN_BACK,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
+    CB_ADMIN_LOGS,
     CB_ADMIN_RESTART,
     CB_ADMIN_RESTART_CONFIRM,
     CB_ADMIN_SETTINGS,
@@ -33,6 +34,7 @@ from app.constants import (
     EMOJI_BACK,
     EMOJI_BEST,
     EMOJI_CHANNEL,
+    EMOJI_LOGS,
     EMOJI_RESTART,
     EMOJI_SETTINGS,
     EMOJI_STATS,
@@ -50,20 +52,20 @@ from app.downloader import FormatOption
 
 
 def _safe_callback_data(data: str) -> str:
-    """Ensure callback_data fits within Telegram's 64-byte limit."""
+    """Обрезает callback_data до лимита Telegram в 64 байта."""
     encoded = data.encode("utf-8")
     if len(encoded) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES:
         return data
     truncated = encoded[:TELEGRAM_CALLBACK_DATA_MAX_BYTES].decode("utf-8", errors="ignore")
-    logging.warning("Callback data truncated: %r -> %r", data, truncated)
+    logging.warning("Callback data обрезано: %r -> %r", data, truncated)
     return truncated
 
 
 def build_format_keyboard(token: str, options: list[FormatOption]) -> types.InlineKeyboardMarkup:
-    """Build quality selection keyboard with multi-column layout."""
+    """Строит клавиатуру выбора качества в несколько столбцов."""
     markup = types.InlineKeyboardMarkup(row_width=3)
 
-    # Quality buttons in rows of 3
+    # Кнопки качества по 3 в ряд
     quality_buttons = []
     for option in options[:TELEGRAM_MAX_BUTTONS_PER_KEYBOARD - 2]:
         cb = _safe_callback_data(f"{CB_DOWNLOAD}|{token}|{option.format_id}")
@@ -78,7 +80,7 @@ def build_format_keyboard(token: str, options: list[FormatOption]) -> types.Inli
         row = quality_buttons[i:i + 3]
         markup.row(*row)
 
-    # Best quality + Audio only on one row
+    # Максимальное качество + Только звук в одном ряду
     markup.row(
         types.InlineKeyboardButton(
             text=f"{EMOJI_BEST} \u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435",
@@ -94,13 +96,14 @@ def build_format_keyboard(token: str, options: list[FormatOption]) -> types.Inli
 
 
 def build_main_menu() -> types.ReplyKeyboardMarkup:
+    """Строит главное reply-меню бота."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(MENU_HELP, MENU_REPORT)
     return markup
 
 
 def build_channel_buttons(channels: list[tuple[int, str | None, str | None]]) -> types.InlineKeyboardMarkup | None:
-    """Build inline URL buttons for required channels."""
+    """Строит инлайн-кнопки со ссылками на обязательные каналы."""
     buttons = []
     for _chat_id, title, invite_link in channels:
         if not invite_link:
@@ -121,7 +124,7 @@ def build_channel_buttons(channels: list[tuple[int, str | None, str | None]]) ->
 
 
 def build_split_confirm_keyboard(token: str) -> types.InlineKeyboardMarkup:
-    """Build confirmation keyboard for splitting large video."""
+    """Строит клавиатуру подтверждения разделения большого видео."""
     markup = types.InlineKeyboardMarkup()
     markup.row(
         types.InlineKeyboardButton(
@@ -136,10 +139,11 @@ def build_split_confirm_keyboard(token: str) -> types.InlineKeyboardMarkup:
     return markup
 
 
-# --- Admin panel keyboards ---
+# --- Клавиатуры админ-панели ---
 
 
 def build_admin_menu(open_tickets: int = 0) -> types.InlineKeyboardMarkup:
+    """Строит главное меню админ-панели."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     tickets_label = f"{EMOJI_TICKETS} \u041e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u044f"
     if open_tickets > 0:
@@ -153,18 +157,21 @@ def build_admin_menu(open_tickets: int = 0) -> types.InlineKeyboardMarkup:
         types.InlineKeyboardButton(text=tickets_label, callback_data=CB_ADMIN_TICKETS),
     )
     markup.row(
+        types.InlineKeyboardButton(text=f"{EMOJI_LOGS} \u041b\u043e\u0433\u0438", callback_data=CB_ADMIN_LOGS),
         types.InlineKeyboardButton(text=f"{EMOJI_RESTART} \u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u043a \u0431\u043e\u0442\u0430", callback_data=CB_ADMIN_RESTART),
     )
     return markup
 
 
 def build_admin_back() -> types.InlineKeyboardMarkup:
+    """Строит кнопку «Назад» для админ-панели."""
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton(text=f"{EMOJI_BACK} \u041d\u0430\u0437\u0430\u0434", callback_data=CB_ADMIN_BACK))
     return markup
 
 
 def build_admin_stats_submenu() -> types.InlineKeyboardMarkup:
+    """Строит подменю статистики."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.row(
         types.InlineKeyboardButton(text="\U0001f4f1 \u041f\u043e \u043f\u043b\u0430\u0442\u0444\u043e\u0440\u043c\u0430\u043c", callback_data=CB_ADMIN_STATS_PLATFORM),
@@ -183,6 +190,7 @@ def build_admin_users_page(
     total_pages: int,
     download_counts: dict[int, int],
 ) -> types.InlineKeyboardMarkup:
+    """Строит страницу списка пользователей с пагинацией."""
     markup = types.InlineKeyboardMarkup()
     for uid, username, first_name, _last_name, blocked in users:
         display = username or first_name or str(uid)
@@ -211,6 +219,7 @@ def build_admin_settings(
     window_hours: int,
     channels_count: int,
 ) -> types.InlineKeyboardMarkup:
+    """Строит клавиатуру настроек бота."""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton(
         text=f"\U0001f522 \u041b\u0438\u043c\u0438\u0442: {free_limit} \u0432\u0438\u0434\u0435\u043e/\u043f\u0435\u0440\u0438\u043e\u0434",
@@ -229,6 +238,7 @@ def build_admin_settings(
 
 
 def build_admin_channels(channels: list[tuple[int, str | None, str | None]]) -> types.InlineKeyboardMarkup:
+    """Строит список обязательных каналов с кнопками удаления."""
     markup = types.InlineKeyboardMarkup()
     for chat_id, title, invite_link in channels:
         label = title or str(chat_id)
@@ -250,6 +260,7 @@ def build_admin_tickets(
     tickets: list[tuple[int, int, str, str]],
     users_map: dict[int, str],
 ) -> types.InlineKeyboardMarkup:
+    """Строит список открытых обращений."""
     markup = types.InlineKeyboardMarkup()
     for ticket_id, user_id, _status, created_at in tickets[:20]:
         username = users_map.get(user_id, str(user_id))
@@ -263,6 +274,7 @@ def build_admin_tickets(
 
 
 def build_ticket_actions(ticket_id: int) -> types.InlineKeyboardMarkup:
+    """Строит кнопки действий для обращения (ответить/закрыть)."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.row(
         types.InlineKeyboardButton(text="\u2709\ufe0f \u041e\u0442\u0432\u0435\u0442\u0438\u0442\u044c", callback_data=_safe_callback_data(f"{CB_TICKET_REPLY}|{ticket_id}")),
@@ -273,6 +285,7 @@ def build_ticket_actions(ticket_id: int) -> types.InlineKeyboardMarkup:
 
 
 def build_restart_confirm() -> types.InlineKeyboardMarkup:
+    """Строит клавиатуру подтверждения перезапуска бота."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.row(
         types.InlineKeyboardButton(text="\u2705 \u0414\u0430, \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c", callback_data=CB_ADMIN_RESTART_CONFIRM),

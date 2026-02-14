@@ -1,4 +1,4 @@
-"""Bot entrypoint: bootstrap, context, signal handling, polling loop."""
+"""Точка входа бота: инициализация, контекст, обработка сигналов, polling-цикл."""
 
 import logging
 import os
@@ -37,7 +37,7 @@ from app.utils import (
 
 
 class BotContext:
-    """Shared context passed to all handler modules."""
+    """Общий контекст, передаваемый во все модули обработчиков."""
 
     def __init__(
         self,
@@ -55,33 +55,37 @@ class BotContext:
         self.membership_cache = membership_cache
         self.active_downloads = active_downloads
         self.shutdown_requested = False
-        # User/admin state machine
+        # Машина состояний пользователя/админа
         self._user_states: dict[int, object] = {}
         self._user_states_lock = threading.Lock()
-        # Queue message tracking
+        # Отслеживание сообщений об очереди
         self._queue_messages: dict[int, tuple[int, int]] = {}
         self._queue_lock = threading.Lock()
 
-    # --- User state management ---
+    # --- Управление состоянием пользователя ---
 
     def get_user_state(self, user_id: int):
+        """Возвращает текущее состояние пользователя."""
         with self._user_states_lock:
             return self._user_states.get(user_id)
 
     def set_user_state(self, user_id: int, state) -> None:
+        """Устанавливает или сбрасывает состояние пользователя."""
         with self._user_states_lock:
             if state is None:
                 self._user_states.pop(user_id, None)
             else:
                 self._user_states[user_id] = state
 
-    # --- Queue message tracking ---
+    # --- Отслеживание сообщений об очереди ---
 
     def add_queue_message(self, user_id: int, chat_id: int, message_id: int) -> None:
+        """Сохраняет ID сообщения об очереди для последующего удаления."""
         with self._queue_lock:
             self._queue_messages[user_id] = (chat_id, message_id)
 
     def remove_queue_message(self, user_id: int) -> None:
+        """Удаляет сообщение об очереди из чата."""
         with self._queue_lock:
             entry = self._queue_messages.pop(user_id, None)
         if entry:
@@ -91,9 +95,10 @@ class BotContext:
             except Exception:
                 pass
 
-    # --- Dynamic settings ---
+    # --- Динамические настройки ---
 
     def get_free_limit(self) -> int:
+        """Возвращает текущий лимит бесплатных загрузок (из БД или конфига)."""
         val = self.storage.get_setting("free_download_limit")
         if val is not None:
             try:
@@ -103,6 +108,7 @@ class BotContext:
         return FREE_DOWNLOAD_LIMIT
 
     def get_free_window(self) -> int:
+        """Возвращает текущее окно лимита в секундах (из БД или конфига)."""
         val = self.storage.get_setting("free_download_window")
         if val is not None:
             try:
@@ -111,9 +117,10 @@ class BotContext:
                 pass
         return FREE_DOWNLOAD_WINDOW_SECONDS
 
-    # --- Core helpers ---
+    # --- Основные вспомогательные методы ---
 
     def ensure_user(self, user: types.User) -> None:
+        """Создаёт или обновляет пользователя в БД."""
         self.storage.upsert_user(
             user.id,
             user.username or "",
@@ -122,6 +129,7 @@ class BotContext:
         )
 
     def clear_last_inline(self, user_id: int, chat_id: int) -> None:
+        """Удаляет инлайн-клавиатуру из последнего сообщения пользователя."""
         message_id = self.storage.get_last_inline_message_id(user_id)
         if not message_id:
             return
@@ -134,13 +142,14 @@ class BotContext:
         self.storage.set_last_inline_message_id(user_id, None)
 
     def check_access(self, user_id: int, chat_id: int) -> bool:
+        """Проверяет, не заблокирован ли пользователь."""
         if self.storage.is_blocked(user_id):
             self.bot.send_message(chat_id, "\u0412\u044b \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b.")
             return False
         return True
 
     def is_required_member(self, user_id: int) -> bool:
-        """Check if user is a member of ALL required chats (with caching)."""
+        """Проверяет, подписан ли пользователь на ВСЕ обязательные каналы (с кэшированием)."""
         if is_admin(user_id):
             return True
         if not REQUIRED_CHAT_IDS:
@@ -162,6 +171,7 @@ class BotContext:
         return True
 
     def is_free_limit_reached(self, user_id: int) -> bool:
+        """Проверяет, исчерпан ли лимит бесплатных загрузок."""
         if self.is_required_member(user_id):
             return False
         now_ts = int(datetime.now(timezone.utc).timestamp())
@@ -172,8 +182,9 @@ class BotContext:
 
 
 def main() -> None:
+    """Основная функция запуска бота."""
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set")
+        raise RuntimeError("BOT_TOKEN не задан")
 
     setup_logging()
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -201,30 +212,30 @@ def main() -> None:
     cleanup_monitor = DataCleanupMonitor()
     cleanup_monitor.start()
 
-    # Register all handlers (admin first, then support, then download/catch-all)
+    # Регистрация обработчиков (сначала админ, затем поддержка, потом скачивание/catch-all)
     register_all_handlers(ctx)
 
-    # --- Shutdown handling ---
+    # --- Обработка завершения ---
 
     def handle_shutdown(_signum: int, _frame: object | None) -> None:
         if ctx.shutdown_requested:
-            logging.warning("Forced shutdown requested")
+            logging.warning("Принудительное завершение")
             sys.exit(1)
         ctx.shutdown_requested = True
-        logging.info("Shutdown signal received, stopping all components...")
+        logging.info("Получен сигнал завершения, останавливаем все компоненты...")
         logging.getLogger("TeleBot").setLevel(logging.CRITICAL)
         try:
             bot.stop_polling()
         except Exception as e:
-            logging.debug("Error stopping bot polling: %s", e)
+            logging.debug("Ошибка при остановке polling: %s", e)
         download_manager.shutdown()
         cleanup_monitor.stop()
-        logging.info("All components stopped")
+        logging.info("Все компоненты остановлены")
 
         def force_exit():
             time.sleep(3)
             if ctx.shutdown_requested:
-                logging.warning("Main thread did not exit in time, forcing exit")
+                logging.warning("Основной поток не завершился вовремя, принудительный выход")
                 os._exit(0)
 
         threading.Thread(target=force_exit, daemon=True).start()
@@ -232,7 +243,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
-    # --- Polling loop ---
+    # --- Polling-цикл ---
 
     consecutive_failures = 0
     first_failure_ts: float | None = None
@@ -269,15 +280,15 @@ def main() -> None:
                 delay = max(delay, TELEGRAM_POLLING_DNS_DELAY_SECONDS)
                 if consecutive_failures == 1:
                     logging.warning(
-                        "Cannot resolve api.telegram.org. "
-                        "Check internet/DNS. Retrying in %ds.",
+                        "Не удаётся разрешить api.telegram.org. "
+                        "Проверьте интернет/DNS. Повтор через %dс.",
                         delay,
                     )
             if consecutive_failures >= 3 or elapsed >= 60:
-                logging.error("Polling exception: %s", exc)
+                logging.error("Ошибка polling: %s", exc)
             time.sleep(delay)
 
-    logging.info("Bot shutdown complete")
+    logging.info("Бот завершил работу")
 
 
 if __name__ == "__main__":

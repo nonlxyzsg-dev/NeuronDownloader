@@ -1,3 +1,5 @@
+"""Скачивание видео через yt-dlp, разделение больших файлов (FFmpeg)."""
+
 import logging
 import os
 import re
@@ -20,6 +22,8 @@ from app.constants import PREFERRED_VIDEO_FORMAT
 
 
 class YtDlpLogger:
+    """Логгер-обёртка для перенаправления вывода yt-dlp в стандартный logging."""
+
     def debug(self, message: str) -> None:
         logging.debug("yt-dlp: %s", message)
 
@@ -32,22 +36,26 @@ class YtDlpLogger:
 
 @dataclass
 class FormatOption:
+    """Вариант качества для выбора пользователем."""
     label: str
     format_id: str
     height: int | None
 
 
 class VideoDownloader:
+    """Класс для скачивания видео через yt-dlp."""
+
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
         self.cookiefile = self._prepare_cookiefile()
 
     def _prepare_cookiefile(self) -> str | None:
+        """Подготавливает и санитизирует файл cookies (формат Netscape)."""
         if not COOKIES_FILE:
             return None
         if not os.path.exists(COOKIES_FILE):
-            logging.warning("Cookie file not found: %s", COOKIES_FILE)
+            logging.warning("Файл cookies не найден: %s", COOKIES_FILE)
             return None
 
         sanitized_lines: list[str] = []
@@ -91,10 +99,11 @@ class VideoDownloader:
             handle.write("# Netscape HTTP Cookie File\n")
             for line in sanitized_lines:
                 handle.write(f"{line}\n")
-        logging.warning("Cookie file sanitized and saved to %s", sanitized_path)
+        logging.warning("Файл cookies санитизирован и сохранён: %s", sanitized_path)
         return sanitized_path
 
     def _base_opts(self, skip_download: bool = False) -> dict:
+        """Формирует базовые опции для yt-dlp."""
         output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
             "format": "bestvideo+bestaudio/best",
@@ -106,8 +115,8 @@ class VideoDownloader:
             "user_agent": USER_AGENT,
             "logger": YtDlpLogger(),
             "remote_components": ["ejs:github"],
-            # Force mp4 container when merging video+audio to avoid webm
-            # which Telegram cannot play inline
+            # Принудительно mp4 при слиянии видео+аудио,
+            # чтобы избежать webm, который Telegram не воспроизводит инлайн
             "merge_output_format": PREFERRED_VIDEO_FORMAT,
         }
         if VK_USERNAME:
@@ -125,7 +134,7 @@ class VideoDownloader:
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         logging.debug(
-            "yt-dlp options: skip_download=%s format=%s merge_output=%s player_clients=%s",
+            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s",
             skip_download,
             opts.get("format"),
             opts.get("merge_output_format"),
@@ -134,10 +143,12 @@ class VideoDownloader:
         return opts
 
     def get_info(self, url: str) -> dict:
+        """Получает метаданные видео без скачивания."""
         with YoutubeDL(self._base_opts(skip_download=True)) as ydl:
             return ydl.extract_info(url, download=False)
 
     def list_formats(self, info: dict) -> list[FormatOption]:
+        """Извлекает список доступных форматов (разрешений) из метаданных."""
         formats = info.get("formats", [])
         options: dict[str, tuple[FormatOption, float]] = {}
         raw_heights: list[tuple[str, int | None]] = []
@@ -177,15 +188,15 @@ class VideoDownloader:
         )
         if formats:
             logging.info(
-                "Raw formats: %s",
+                "Исходные форматы: %s",
                 ", ".join(
                     f"{format_id or 'unknown'}:{height or 'n/a'}"
                     for format_id, height in raw_heights
                 ),
             )
             logging.info(
-                "Available quality options: %s",
-                ", ".join(option.label for option in sorted_options) or "none",
+                "Доступные варианты качества: %s",
+                ", ".join(option.label for option in sorted_options) or "нет",
             )
         return sorted_options
 
@@ -196,10 +207,11 @@ class VideoDownloader:
         audio_only: bool = False,
         progress_callback: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict]:
+        """Скачивает видео/аудио и возвращает (путь_к_файлу, метаданные)."""
         ydl_opts = self._base_opts()
         if audio_only:
             ydl_opts["format"] = "bestaudio/best"
-            # For audio, prefer m4a/mp3 over webm/opus
+            # Для аудио предпочитаем m4a/mp3 вместо webm/opus
             ydl_opts["merge_output_format"] = None
             ydl_opts["postprocessors"] = [
                 {
@@ -216,10 +228,9 @@ class VideoDownloader:
         file_path = ydl.prepare_filename(info)
         if info.get("_filename"):
             file_path = info["_filename"]
-        # After postprocessing, the extension might have changed
-        # Check for actual file existence
+        # После постобработки расширение могло измениться — проверяем наличие файла
         if not os.path.exists(file_path):
-            # Try common extensions after conversion
+            # Пробуем типичные расширения после конвертации
             base = os.path.splitext(file_path)[0]
             for ext in ("mp4", "m4a", "mp3", "mkv"):
                 candidate = f"{base}.{ext}"
@@ -235,9 +246,9 @@ class VideoDownloader:
         format_id: str | None,
         audio_only: bool = False,
     ) -> tuple[str | None, int | None]:
-        """Get a direct HTTP URL for a format that Telegram can play.
+        """Получает прямой HTTP URL для формата, который Telegram может воспроизвести.
 
-        For video, only return URLs for mp4 containers to avoid webm issues.
+        Для видео возвращает только URL mp4-контейнеров, чтобы избежать проблем с webm.
         """
         formats = info.get("formats") or []
         candidates = []
@@ -262,13 +273,13 @@ class VideoDownloader:
             and (fmt.get("protocol") or "").startswith("http")
             and fmt.get("protocol") not in ("m3u8", "m3u8_native", "dash")
         ]
-        # Filter out webm/non-mp4 video formats to avoid Telegram playback issues
+        # Фильтруем webm/не-mp4 форматы для корректного воспроизведения в Telegram
         if not audio_only:
             mp4_candidates = [
                 fmt for fmt in candidates
                 if (fmt.get("ext") or "").lower() == "mp4"
             ]
-            # Only use mp4 filter if we have mp4 candidates
+            # Используем mp4-фильтр только если есть mp4-кандидаты
             if mp4_candidates:
                 candidates = mp4_candidates
         if format_id:
@@ -295,6 +306,7 @@ class VideoDownloader:
         return fmt.get("url"), fmt.get("filesize") or fmt.get("filesize_approx")
 
     def _rename_to_safe_filename(self, file_path: str, info: dict) -> str:
+        """Переименовывает файл в безопасное имя (только ASCII-символы)."""
         base = info.get("id") or info.get("display_id") or info.get("title") or "video"
         timestamp = info.get("timestamp") or int(time.time())
         base = f"{base}_{timestamp}"
@@ -320,11 +332,12 @@ class VideoDownloader:
         try:
             os.replace(file_path, unique_path)
         except OSError:
-            logging.exception("Failed to rename %s -> %s", file_path, unique_path)
+            logging.exception("Не удалось переименовать %s -> %s", file_path, unique_path)
             return file_path
         return unique_path
 
     def resolve_format_id(self, info: dict, resolution: str | None) -> str | None:
+        """Находит format_id по разрешению (например, '720p')."""
         if not resolution or resolution == "best":
             return None
         target_height = None
@@ -341,7 +354,7 @@ class VideoDownloader:
         return None
 
     def split_video(self, file_path: str, max_size: int = 45 * 1024 * 1024) -> list[str]:
-        """Split video into parts of approximately max_size bytes using FFmpeg."""
+        """Разделяет видео на части примерно по max_size байт через FFmpeg."""
         import math
         import subprocess
 
@@ -349,7 +362,7 @@ class VideoDownloader:
         if file_size <= max_size:
             return [file_path]
 
-        # Get duration via ffprobe
+        # Получаем длительность через ffprobe
         try:
             result = subprocess.run(
                 [
@@ -362,7 +375,7 @@ class VideoDownloader:
             )
             duration = float(result.stdout.strip())
         except Exception:
-            logging.exception("ffprobe failed for %s", file_path)
+            logging.exception("ffprobe не удался для %s", file_path)
             return [file_path]
 
         if duration <= 0:
@@ -388,13 +401,14 @@ class VideoDownloader:
                 if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
                     parts.append(part_path)
                 else:
-                    logging.warning("Split part %d empty or missing: %s", i + 1, part_path)
+                    logging.warning("Часть %d пуста или отсутствует: %s", i + 1, part_path)
             except Exception:
-                logging.exception("FFmpeg split failed for part %d of %s", i + 1, file_path)
+                logging.exception("FFmpeg: ошибка при разделении части %d файла %s", i + 1, file_path)
 
         return parts if parts else [file_path]
 
     def get_latest_entry(self, channel_url: str) -> dict | None:
+        """Получает последнее видео с канала (flat-извлечение)."""
         ydl_opts = self._base_opts(skip_download=True)
         ydl_opts["extract_flat"] = True
         with YoutubeDL(ydl_opts) as ydl:

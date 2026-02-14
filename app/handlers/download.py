@@ -1,4 +1,4 @@
-"""Download flow handlers: URL reception, format selection, download job."""
+"""Обработчики скачивания: приём URL, выбор качества, задача загрузки."""
 
 import logging
 import os
@@ -56,14 +56,14 @@ from app.utils import (
 
 
 def register_download_handlers(ctx) -> None:
-    """Register all download-related handlers."""
+    """Регистрирует все обработчики, связанные со скачиванием."""
     bot = ctx.bot
     storage = ctx.storage
     downloader = ctx.downloader
     download_manager = ctx.download_manager
     active_downloads = ctx.active_downloads
 
-    # Temporary storage for split tokens -> file info
+    # Временное хранилище: токен разделения -> информация о файле
     _split_pending: dict[str, dict] = {}
 
     def _send_media(
@@ -74,7 +74,7 @@ def register_download_handlers(ctx) -> None:
         audio_only: bool,
         file_size: int | None = None,
     ) -> None:
-        """Send audio/video to user with retry logic."""
+        """Отправляет аудио/видео пользователю с логикой повторных попыток."""
         caption = format_caption(title)
         bot.send_chat_action(
             chat_id,
@@ -105,11 +105,11 @@ def register_download_handlers(ctx) -> None:
             else "unknown"
         )
         logging.info(
-            "%s uploaded to user %s in %.2fs (size=%s, speed=%s)",
-            "Audio" if audio_only else "Video",
+            "%s отправлено пользователю %s за %.2fs (размер=%s, скорость=%s)",
+            "Аудио" if audio_only else "Видео",
             user_id,
             upload_duration,
-            format_bytes(file_size) if file_size else "unknown",
+            format_bytes(file_size) if file_size else "неизвестно",
             upload_speed,
         )
 
@@ -128,13 +128,13 @@ def register_download_handlers(ctx) -> None:
             if storage.is_blocked(user_id):
                 return
             if ctx.shutdown_requested:
-                logging.info("Skipping download due to shutdown")
+                logging.info("Загрузка пропущена из-за завершения работы")
                 return
 
-            # Remove queue message
+            # Удаляем сообщение об очереди
             ctx.remove_queue_message(user_id)
 
-            # Deduplication: skip if same URL is already being downloaded
+            # Дедупликация: пропускаем, если тот же URL уже скачивается
             if not active_downloads.try_acquire(url):
                 bot.send_message(
                     chat_id,
@@ -158,10 +158,10 @@ def register_download_handlers(ctx) -> None:
 
             def progress_hook(data: dict) -> None:
                 if ctx.shutdown_requested:
-                    raise KeyboardInterrupt("Download interrupted by shutdown")
+                    raise KeyboardInterrupt("Загрузка прервана из-за завершения работы")
                 if time.monotonic() - download_started > DOWNLOAD_TIMEOUT_SECONDS:
                     raise TimeoutError(
-                        f"Download exceeded {DOWNLOAD_TIMEOUT_SECONDS}s timeout"
+                        f"Загрузка превысила таймаут {DOWNLOAD_TIMEOUT_SECONDS}с"
                     )
                 if not progress_message_id:
                     return
@@ -185,7 +185,7 @@ def register_download_handlers(ctx) -> None:
                     )
                     if not logged_missing_total[0]:
                         logging.info(
-                            "Progress without total size (downloaded=%s, speed=%s, url=%s)",
+                            "Прогресс без общего размера (скачано=%s, скорость=%s, url=%s)",
                             format_bytes(downloaded),
                             format_speed(speed),
                             url,
@@ -207,7 +207,7 @@ def register_download_handlers(ctx) -> None:
 
             try:
                 logging.info(
-                    "Download job started: user=%s url=%s format=%s audio=%s",
+                    "Задача загрузки запущена: user=%s url=%s format=%s audio=%s",
                     user_id, url, selected_format or "best", audio_only,
                 )
                 if reaction_message_id:
@@ -239,7 +239,7 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         progress_message_id = None
 
-                # Try direct URL upload first
+                # Сначала пробуем отправить по прямой ссылке
                 direct_info = None
                 direct_url = None
                 direct_size = None
@@ -249,18 +249,18 @@ def register_download_handlers(ctx) -> None:
                         direct_info, selected_format, audio_only=audio_only,
                     )
                 except Exception:
-                    logging.exception("Failed to resolve direct URL for %s", url)
+                    logging.exception("Не удалось получить прямую ссылку для %s", url)
 
                 queue_delay = time.monotonic() - download_started
                 logging.info(
-                    "Download starting after %.2fs queue delay (user=%s, url=%s)",
+                    "Загрузка начинается после %.2fs ожидания в очереди (user=%s, url=%s)",
                     queue_delay, user_id, url,
                 )
 
                 if direct_url:
                     if direct_size and direct_size > TELEGRAM_MAX_FILE_SIZE:
                         logging.info(
-                            "Direct URL file too large (%s), falling back to download",
+                            "Файл по прямой ссылке слишком большой (%s), переходим к скачиванию",
                             format_bytes(direct_size),
                         )
                     else:
@@ -290,11 +290,11 @@ def register_download_handlers(ctx) -> None:
                             return
                         except Exception:
                             logging.exception(
-                                "Direct URL upload failed, falling back to download "
+                                "Отправка по прямой ссылке не удалась, переходим к скачиванию "
                                 "(user=%s, url=%s)", user_id, url,
                             )
 
-                # Fallback: download to file
+                # Запасной вариант: скачиваем в файл
                 file_path, info = downloader.download(
                     url, selected_format,
                     audio_only=audio_only,
@@ -303,13 +303,13 @@ def register_download_handlers(ctx) -> None:
                 download_duration = time.monotonic() - download_started
                 total_bytes = get_file_size(file_path)
                 logging.info(
-                    "Download finished in %.2fs (size=%s, path=%s, url=%s)",
+                    "Скачивание завершено за %.2fs (размер=%s, путь=%s, url=%s)",
                     download_duration,
-                    format_bytes(total_bytes) if total_bytes else "unknown",
+                    format_bytes(total_bytes) if total_bytes else "неизвестно",
                     file_path, url,
                 )
 
-                # If file too large, offer to split
+                # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
                     split_token = uuid.uuid4().hex[:12]
                     _split_pending[split_token] = {
@@ -365,7 +365,7 @@ def register_download_handlers(ctx) -> None:
                 try:
                     os.remove(file_path)
                 except OSError:
-                    logging.exception("Failed to delete file %s after upload", file_path)
+                    logging.exception("Не удалось удалить файл %s после отправки", file_path)
 
                 if progress_message_id:
                     try:
@@ -407,7 +407,7 @@ def register_download_handlers(ctx) -> None:
 
         try:
             logging.info(
-                "Queue status: queued=%s/%s active_user=%s",
+                "Состояние очереди: в_очереди=%s/%s активных_у_пользователя=%s",
                 download_manager.queued_count(),
                 download_manager.max_queue_size(),
                 download_manager.active_count(user_id),
@@ -416,7 +416,7 @@ def register_download_handlers(ctx) -> None:
         except queue.Full:
             bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
 
-    # --- Message handlers ---
+    # --- Обработчики сообщений ---
 
     @bot.message_handler(commands=["start", "help"])
     def send_welcome(message: types.Message) -> None:
@@ -447,7 +447,7 @@ def register_download_handlers(ctx) -> None:
         ctx.ensure_user(message.from_user)
         if not ctx.check_access(message.from_user.id, message.chat.id):
             return
-        # Skip if user has an active state (report, admin input, etc.)
+        # Пропускаем, если у пользователя активное состояние (репорт, ввод админа и т.д.)
         state = ctx.get_user_state(message.from_user.id)
         if state is not None:
             return
@@ -551,7 +551,7 @@ def register_download_handlers(ctx) -> None:
         )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
 
-    # --- Callback handlers ---
+    # --- Обработчики callback-запросов ---
 
     @bot.callback_query_handler(
         func=lambda call: call.data and call.data.startswith(f"{CB_DOWNLOAD}|")
@@ -621,7 +621,7 @@ def register_download_handlers(ctx) -> None:
             pass
         storage.set_last_inline_message_id(call.from_user.id, None)
 
-    # --- Split handlers ---
+    # --- Обработчики разделения видео ---
 
     @bot.callback_query_handler(
         func=lambda call: call.data and call.data.startswith(f"{CB_SPLIT_YES}|")
@@ -658,13 +658,13 @@ def register_download_handlers(ctx) -> None:
                         audio_only, file_size=part_size,
                     )
             except Exception:
-                logging.exception("Failed to send part %d/%d", i, total_parts)
+                logging.exception("Не удалось отправить часть %d/%d", i, total_parts)
             finally:
                 try:
                     os.remove(part_path)
                 except OSError:
                     pass
-        # Clean up original file
+        # Удаляем исходный файл
         try:
             os.remove(file_path)
         except OSError:
