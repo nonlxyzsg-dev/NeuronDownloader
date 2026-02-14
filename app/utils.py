@@ -1,4 +1,4 @@
-"""Shared utility functions: formatting, URL helpers, caching, retry logic."""
+"""Общие утилиты: форматирование, URL-помощники, кэширование, повторные попытки."""
 
 import logging
 import os
@@ -22,7 +22,7 @@ from app.config import (
 )
 
 
-# --- URL helpers ---
+# --- URL-помощники ---
 
 
 def is_youtube_url(url: str) -> bool:
@@ -38,10 +38,11 @@ def append_youtube_client_hint(message: str) -> str:
     return f"{message}\n\n{hint}"
 
 
-# --- Text formatting ---
+# --- Форматирование текста ---
 
 
 def format_caption(title: str) -> str:
+    """Формирует подпись к медиафайлу с заголовком и подписью бота."""
     title = title.strip()
     if title:
         caption = f"{title}\n\n{BOT_SIGNATURE}"
@@ -57,6 +58,7 @@ def format_caption(title: str) -> str:
 
 
 def format_bytes(value: float | None) -> str:
+    """Форматирует размер в байтах в человекочитаемый вид."""
     if value is None:
         return "0 B"
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -69,12 +71,14 @@ def format_bytes(value: float | None) -> str:
 
 
 def format_speed(value: float | None) -> str:
+    """Форматирует скорость в человекочитаемый вид."""
     if value is None:
         return "0 B/s"
     return f"{format_bytes(value)}/s"
 
 
 def format_limit_message(free_limit: int | None = None, window_seconds: int | None = None) -> str:
+    """Формирует сообщение о лимите бесплатных загрузок."""
     limit = free_limit if free_limit is not None else FREE_DOWNLOAD_LIMIT
     window = window_seconds if window_seconds is not None else FREE_DOWNLOAD_WINDOW_SECONDS
     if window % 3600 == 0:
@@ -92,18 +96,19 @@ def format_limit_message(free_limit: int | None = None, window_seconds: int | No
     )
 
 
-# --- Access helpers ---
+# --- Проверка доступа ---
 
 
 def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором."""
     return user_id in ADMIN_IDS
 
 
-# --- File helpers ---
+# --- Работа с файлами ---
 
 
 def validate_file_size(file_path: str) -> bool:
-    """Check if file size is within Telegram's upload limit (50 MB)."""
+    """Проверяет, что размер файла в пределах лимита Telegram (50 МБ)."""
     try:
         return os.path.getsize(file_path) <= TELEGRAM_MAX_FILE_SIZE
     except OSError:
@@ -111,17 +116,18 @@ def validate_file_size(file_path: str) -> bool:
 
 
 def get_file_size(file_path: str) -> int | None:
+    """Возвращает размер файла в байтах или None при ошибке."""
     try:
         return os.path.getsize(file_path)
     except OSError:
         return None
 
 
-# --- Upload retry ---
+# --- Повторные попытки загрузки ---
 
 
 def send_with_retry(send_func, *args, **kwargs):
-    """Call send_func with retry logic for transient Telegram errors."""
+    """Вызывает send_func с повторными попытками при временных ошибках Telegram."""
     last_exc = None
     for attempt in range(UPLOAD_MAX_RETRIES):
         try:
@@ -138,7 +144,7 @@ def send_with_retry(send_func, *args, **kwargs):
             if attempt < UPLOAD_MAX_RETRIES - 1:
                 delay = UPLOAD_RETRY_DELAYS[min(attempt, len(UPLOAD_RETRY_DELAYS) - 1)]
                 logging.warning(
-                    "Upload attempt %d/%d failed: %s, retrying in %ds",
+                    "Попытка загрузки %d/%d не удалась: %s, повтор через %dс",
                     attempt + 1,
                     UPLOAD_MAX_RETRIES,
                     exc,
@@ -148,11 +154,11 @@ def send_with_retry(send_func, *args, **kwargs):
     raise last_exc
 
 
-# --- Error notification ---
+# --- Уведомления об ошибках ---
 
 
 def notify_admin_error(bot, user_id: int, username: str, action: str, error: Exception) -> None:
-    """Send error notification to all admins with user context."""
+    """Отправляет уведомление об ошибке всем админам с контекстом пользователя."""
     tb = traceback.format_exc()
     if len(tb) > 800:
         tb = "..." + tb[-800:]
@@ -167,21 +173,21 @@ def notify_admin_error(bot, user_id: int, username: str, action: str, error: Exc
         f"\n\u274c <b>\u041e\u0448\u0438\u0431\u043a\u0430:</b> {error}"
         f"\n\n<pre>{tb}</pre>"
     )
-    # Truncate to Telegram limit
+    # Обрезаем до лимита Telegram
     if len(message) > 4000:
         message = message[:4000] + "..."
     for admin_id in ADMIN_IDS:
         try:
             bot.send_message(admin_id, message, parse_mode="HTML")
         except Exception:
-            logging.debug("Failed to notify admin %s about error", admin_id)
+            logging.debug("Не удалось уведомить админа %s об ошибке", admin_id)
 
 
-# --- Membership cache ---
+# --- Кэш подписок ---
 
 
 class MembershipCache:
-    """Thread-safe cache for chat membership checks to reduce Telegram API calls."""
+    """Потокобезопасный кэш проверок подписок для снижения нагрузки на Telegram API."""
 
     def __init__(self, ttl: int = MEMBERSHIP_CACHE_TTL) -> None:
         self._cache: dict[tuple[int, int], tuple[bool, float]] = {}
@@ -189,6 +195,7 @@ class MembershipCache:
         self._ttl = ttl
 
     def get(self, chat_id: int, user_id: int) -> bool | None:
+        """Возвращает кэшированный статус подписки или None, если запись устарела."""
         with self._lock:
             key = (chat_id, user_id)
             entry = self._cache.get(key)
@@ -201,21 +208,23 @@ class MembershipCache:
             return is_member
 
     def set(self, chat_id: int, user_id: int, is_member: bool) -> None:
+        """Сохраняет статус подписки в кэш."""
         with self._lock:
             self._cache[(chat_id, user_id)] = (is_member, time.monotonic())
 
 
-# --- Download deduplication ---
+# --- Дедупликация загрузок ---
 
 
 class ActiveDownloads:
-    """Track active downloads to prevent duplicate concurrent downloads of the same URL."""
+    """Отслеживает активные загрузки для предотвращения дублей по одному URL."""
 
     def __init__(self) -> None:
         self._active: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def try_acquire(self, url: str) -> bool:
+        """Пытается занять URL для загрузки. Возвращает False, если уже скачивается."""
         with self._lock:
             if self._active.get(url, 0) > 0:
                 return False
@@ -223,6 +232,7 @@ class ActiveDownloads:
             return True
 
     def release(self, url: str) -> None:
+        """Освобождает URL после завершения загрузки."""
         with self._lock:
             count = self._active.get(url, 0)
             if count <= 1:
@@ -231,5 +241,6 @@ class ActiveDownloads:
                 self._active[url] = count - 1
 
     def is_active(self, url: str) -> bool:
+        """Проверяет, скачивается ли данный URL в данный момент."""
         with self._lock:
             return self._active.get(url, 0) > 0

@@ -1,3 +1,5 @@
+"""SQLite-хранилище: пользователи, загрузки, тикеты, настройки."""
+
 import os
 import sqlite3
 import uuid
@@ -6,12 +8,15 @@ from app.config import DATA_DIR, DB_FILENAME
 
 
 class Storage:
+    """Хранилище данных бота на SQLite."""
+
     def __init__(self) -> None:
         os.makedirs(DATA_DIR, exist_ok=True)
         self.db_path = os.path.join(DATA_DIR, DB_FILENAME)
         self._init_db()
 
     def _ensure_db(self) -> None:
+        """Проверяет наличие БД и таблиц, при необходимости создаёт."""
         if not os.path.exists(self.db_path):
             self._init_db()
             return
@@ -23,10 +28,12 @@ class Storage:
                 self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        """Возвращает соединение с БД."""
         self._ensure_db()
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:
+        """Создаёт все таблицы БД."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -70,7 +77,7 @@ class Storage:
                 )
                 """
             )
-            # --- Support system ---
+            # --- Система поддержки ---
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS support_tickets (
@@ -96,7 +103,7 @@ class Storage:
                 )
                 """
             )
-            # --- Required channels (managed via admin) ---
+            # --- Обязательные каналы (управляются через админку) ---
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS required_channels (
@@ -106,7 +113,7 @@ class Storage:
                 )
                 """
             )
-            # --- Dynamic bot settings ---
+            # --- Динамические настройки бота ---
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bot_settings (
@@ -116,9 +123,10 @@ class Storage:
                 """
             )
 
-    # --- Pending requests ---
+    # --- Ожидающие запросы ---
 
     def create_request(self, url: str, title: str, description: str, channel_url: str | None) -> str:
+        """Создаёт запрос на скачивание и возвращает токен."""
         token = uuid.uuid4().hex[:12]
         with self._connect() as conn:
             conn.execute(
@@ -128,6 +136,7 @@ class Storage:
         return token
 
     def get_request(self, token: str) -> tuple[str, str, str, str | None] | None:
+        """Возвращает данные запроса по токену."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT url, title, description, channel_url FROM pending_requests WHERE token = ?",
@@ -139,12 +148,14 @@ class Storage:
         return row[0], row[1] or "", row[2] or "", row[3]
 
     def delete_request(self, token: str) -> None:
+        """Удаляет запрос по токену."""
         with self._connect() as conn:
             conn.execute("DELETE FROM pending_requests WHERE token = ?", (token,))
 
-    # --- Users ---
+    # --- Пользователи ---
 
     def upsert_user(self, user_id: int, username: str, first_name: str, last_name: str) -> None:
+        """Создаёт или обновляет данные пользователя."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -159,6 +170,7 @@ class Storage:
             )
 
     def is_blocked(self, user_id: int) -> bool:
+        """Проверяет, заблокирован ли пользователь."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT blocked FROM users WHERE user_id = ?",
@@ -168,6 +180,7 @@ class Storage:
         return bool(row and row[0])
 
     def set_blocked(self, user_id: int, blocked: bool) -> None:
+        """Устанавливает статус блокировки пользователя."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE users SET blocked = ? WHERE user_id = ?",
@@ -175,6 +188,7 @@ class Storage:
             )
 
     def list_users(self) -> list[tuple[int, str, str, str, int]]:
+        """Возвращает список всех пользователей."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT user_id, username, first_name, last_name, blocked FROM users ORDER BY user_id"
@@ -182,6 +196,7 @@ class Storage:
             return cur.fetchall()
 
     def get_user(self, user_id: int) -> tuple[int, str, str, str, int] | None:
+        """Возвращает данные пользователя по ID."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT user_id, username, first_name, last_name, blocked FROM users WHERE user_id = ?",
@@ -190,10 +205,12 @@ class Storage:
             return cur.fetchone()
 
     def count_users(self) -> int:
+        """Возвращает общее количество пользователей."""
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
     def get_last_inline_message_id(self, user_id: int) -> int | None:
+        """Возвращает ID последнего инлайн-сообщения пользователя."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT last_inline_message_id FROM users WHERE user_id = ?",
@@ -205,15 +222,17 @@ class Storage:
         return row[0]
 
     def set_last_inline_message_id(self, user_id: int, message_id: int | None) -> None:
+        """Сохраняет ID последнего инлайн-сообщения пользователя."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE users SET last_inline_message_id = ? WHERE user_id = ?",
                 (message_id, user_id),
             )
 
-    # --- Downloads ---
+    # --- Загрузки ---
 
     def log_download(self, user_id: int, platform: str, status: str) -> None:
+        """Записывает событие загрузки."""
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO downloads (user_id, platform, status) VALUES (?, ?, ?)",
@@ -221,6 +240,7 @@ class Storage:
             )
 
     def log_free_download(self, user_id: int, created_at: int) -> None:
+        """Записывает бесплатную загрузку для учёта лимитов."""
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO free_downloads (user_id, created_at) VALUES (?, ?)",
@@ -228,6 +248,7 @@ class Storage:
             )
 
     def count_free_downloads_since(self, user_id: int, start_ts: int) -> int:
+        """Считает бесплатные загрузки пользователя с указанного момента."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT COUNT(*) FROM free_downloads WHERE user_id = ? AND created_at >= ?",
@@ -236,15 +257,17 @@ class Storage:
             row = cur.fetchone()
         return int(row[0]) if row else 0
 
-    # --- Statistics ---
+    # --- Статистика ---
 
     def get_usage_stats(self) -> tuple[int, int]:
+        """Возвращает общую статистику: (кол-во пользователей, кол-во загрузок)."""
         with self._connect() as conn:
             total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
             total_downloads = conn.execute("SELECT COUNT(*) FROM downloads").fetchone()[0]
         return int(total_users), int(total_downloads)
 
     def get_user_stats(self) -> list[tuple[int, int]]:
+        """Возвращает статистику загрузок по пользователям."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT user_id, COUNT(*) FROM downloads GROUP BY user_id ORDER BY COUNT(*) DESC"
@@ -252,6 +275,7 @@ class Storage:
             return cur.fetchall()
 
     def get_user_download_count(self, user_id: int) -> int:
+        """Возвращает количество загрузок пользователя."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT COUNT(*) FROM downloads WHERE user_id = ?",
@@ -260,6 +284,7 @@ class Storage:
             return cur.fetchone()[0]
 
     def get_stats_by_platform(self) -> list[tuple[str, int]]:
+        """Возвращает статистику загрузок по платформам."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT COALESCE(platform, 'unknown'), COUNT(*) FROM downloads "
@@ -268,6 +293,7 @@ class Storage:
             return cur.fetchall()
 
     def get_stats_by_day(self, days: int = 7) -> list[tuple[str, int]]:
+        """Возвращает статистику загрузок по дням за последние N дней."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT DATE(created_at) as day, COUNT(*) FROM downloads "
@@ -278,6 +304,7 @@ class Storage:
             return cur.fetchall()
 
     def get_downloads_today(self) -> int:
+        """Возвращает количество загрузок за сегодня."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT COUNT(*) FROM downloads WHERE DATE(created_at) = DATE('now')"
@@ -285,15 +312,17 @@ class Storage:
             return cur.fetchone()[0]
 
     def get_downloads_week(self) -> int:
+        """Возвращает количество загрузок за последние 7 дней."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT COUNT(*) FROM downloads WHERE created_at >= datetime('now', '-7 days')"
             )
             return cur.fetchone()[0]
 
-    # --- Support tickets ---
+    # --- Тикеты поддержки ---
 
     def create_ticket(self, user_id: int) -> int:
+        """Создаёт тикет поддержки и возвращает его ID."""
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO support_tickets (user_id) VALUES (?)",
@@ -302,6 +331,7 @@ class Storage:
             return cur.lastrowid
 
     def get_ticket(self, ticket_id: int) -> tuple[int, int, str, str] | None:
+        """Возвращает данные тикета по ID."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT id, user_id, status, created_at FROM support_tickets WHERE id = ?",
@@ -310,6 +340,7 @@ class Storage:
             return cur.fetchone()
 
     def list_open_tickets(self) -> list[tuple[int, int, str, str]]:
+        """Возвращает список открытых тикетов."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT t.id, t.user_id, t.status, t.created_at "
@@ -319,6 +350,7 @@ class Storage:
             return cur.fetchall()
 
     def close_ticket(self, ticket_id: int) -> None:
+        """Закрывает тикет."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE support_tickets SET status = 'closed' WHERE id = ?",
@@ -334,6 +366,7 @@ class Storage:
         file_id: str | None = None,
         file_type: str | None = None,
     ) -> None:
+        """Добавляет сообщение к тикету."""
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO support_messages (ticket_id, from_user_id, is_admin, text, file_id, file_type) "
@@ -342,6 +375,7 @@ class Storage:
             )
 
     def get_ticket_messages(self, ticket_id: int) -> list[tuple[int, int, int, str | None, str | None, str | None, str]]:
+        """Возвращает все сообщения тикета."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT id, from_user_id, is_admin, text, file_id, file_type, created_at "
@@ -351,14 +385,16 @@ class Storage:
             return cur.fetchall()
 
     def count_open_tickets(self) -> int:
+        """Возвращает количество открытых тикетов."""
         with self._connect() as conn:
             return conn.execute(
                 "SELECT COUNT(*) FROM support_tickets WHERE status = 'open'"
             ).fetchone()[0]
 
-    # --- Required channels ---
+    # --- Обязательные каналы ---
 
     def get_required_channels(self) -> list[tuple[int, str | None, str | None]]:
+        """Возвращает список обязательных каналов."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT chat_id, title, invite_link FROM required_channels"
@@ -366,6 +402,7 @@ class Storage:
             return cur.fetchall()
 
     def add_required_channel(self, chat_id: int, title: str | None = None, invite_link: str | None = None) -> None:
+        """Добавляет или обновляет обязательный канал."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -379,15 +416,17 @@ class Storage:
             )
 
     def remove_required_channel(self, chat_id: int) -> None:
+        """Удаляет обязательный канал."""
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM required_channels WHERE chat_id = ?",
                 (chat_id,),
             )
 
-    # --- Bot settings ---
+    # --- Настройки бота ---
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
+        """Возвращает значение настройки по ключу."""
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT value FROM bot_settings WHERE key = ?",
@@ -397,6 +436,7 @@ class Storage:
         return row[0] if row else default
 
     def set_setting(self, key: str, value: str) -> None:
+        """Устанавливает значение настройки."""
         with self._connect() as conn:
             conn.execute(
                 """

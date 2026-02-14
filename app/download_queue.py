@@ -1,3 +1,5 @@
+"""Менеджер очереди загрузок с пулом рабочих потоков."""
+
 from __future__ import annotations
 
 import queue
@@ -10,6 +12,8 @@ T = TypeVar("T")
 
 
 class DownloadManager:
+    """Очередь задач загрузки с ограничением одновременных задач на пользователя."""
+
     def __init__(
         self,
         max_workers: int,
@@ -35,26 +39,32 @@ class DownloadManager:
             worker.start()
 
     def submit(self, func: Callable[..., T], *args, **kwargs) -> Future[T]:
+        """Добавляет задачу в очередь без привязки к пользователю."""
         future: Future[T] = Future()
         self._queue.put_nowait((func, args, kwargs, future, None))
         return future
 
     def submit_user(self, user_id: int, func: Callable[..., T], *args, **kwargs) -> Future[T]:
+        """Добавляет задачу в очередь с привязкой к пользователю."""
         future: Future[T] = Future()
         self._queue.put_nowait((func, args, kwargs, future, user_id))
         return future
 
     def queued_count(self) -> int:
+        """Возвращает текущий размер очереди."""
         return self._queue.qsize()
 
     def max_queue_size(self) -> int:
+        """Возвращает максимальный размер очереди."""
         return self._max_queue_size
 
     def active_count(self, user_id: int) -> int:
+        """Возвращает количество активных задач пользователя."""
         with self._active_lock:
             return self._active_counts.get(user_id, 0)
 
     def _worker(self) -> None:
+        """Рабочий поток: извлекает и выполняет задачи из очереди."""
         while True:
             try:
                 item = self._queue.get(timeout=0.5)
@@ -86,15 +96,9 @@ class DownloadManager:
             self._queue.task_done()
 
     def shutdown(self, timeout: float = 2.0) -> None:
-        """Останавливает все рабочие потоки.
-        
-        Args:
-            timeout: Максимальное время ожидания завершения каждого потока в секундах
-        """
+        """Останавливает все рабочие потоки."""
         self._stop_event.set()
-        # Пробуждаем все потоки, ожидающие в condition
         with self._active_condition:
             self._active_condition.notify_all()
-        # Ждем завершения потоков
         for worker in self._workers:
             worker.join(timeout=timeout)

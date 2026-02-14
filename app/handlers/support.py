@@ -1,4 +1,4 @@
-"""Support / feedback flow handlers: report submission by users."""
+"""Обработчики поддержки: отправка обращений пользователями."""
 
 import logging
 
@@ -16,21 +16,21 @@ logger = logging.getLogger(__name__)
 
 
 def register_support_handlers(ctx) -> None:
-    """Register all support / ticket-related handlers for users.
+    """Регистрирует все обработчики системы поддержки для пользователей.
 
-    Admin reply handlers live in admin.py to avoid duplicate registrations.
+    Обработчики ответов админа находятся в admin.py во избежание дублирования.
     """
     bot = ctx.bot
     storage = ctx.storage
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Вспомогательные функции
     # ------------------------------------------------------------------
 
     def _notify_admins(ticket_id: int, user_id: int, username: str | None,
                        text: str, file_id: str | None = None,
                        file_type: str | None = None) -> None:
-        """Send a notification about a new ticket to every admin."""
+        """Отправляет уведомление о новом обращении всем админам."""
         handle = f"@{username}" if username else "\u043d\u0435\u0442"
         header = (
             f"\U0001f4ec \u041d\u043e\u0432\u043e\u0435 \u043e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u0435 #{ticket_id}\n"
@@ -52,7 +52,7 @@ def register_support_handlers(ctx) -> None:
                                  admin_id, ticket_id)
 
     def _confirm_ticket(chat_id: int, ticket_id: int) -> None:
-        """Send a confirmation to the user that the ticket was created."""
+        """Отправляет пользователю подтверждение создания обращения."""
         bot.send_message(
             chat_id,
             f"{EMOJI_DONE} \u041e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u0435 #{ticket_id} \u0441\u043e\u0437\u0434\u0430\u043d\u043e. "
@@ -61,7 +61,7 @@ def register_support_handlers(ctx) -> None:
         )
 
     # ------------------------------------------------------------------
-    # /report command
+    # Команда /report
     # ------------------------------------------------------------------
 
     @bot.message_handler(commands=["report"])
@@ -82,7 +82,7 @@ def register_support_handlers(ctx) -> None:
             logger.exception("\u041e\u0448\u0438\u0431\u043a\u0430 \u0432 /report (user=%s)", message.from_user.id)
 
     # ------------------------------------------------------------------
-    # MENU_REPORT button click (text match)
+    # Нажатие кнопки MENU_REPORT (текстовое совпадение)
     # ------------------------------------------------------------------
 
     @bot.message_handler(func=lambda msg: msg.text == MENU_REPORT)
@@ -104,7 +104,7 @@ def register_support_handlers(ctx) -> None:
                              message.from_user.id)
 
     # ------------------------------------------------------------------
-    # User report: text
+    # Обращение пользователя: текст
     # ------------------------------------------------------------------
 
     @bot.message_handler(
@@ -142,7 +142,7 @@ def register_support_handlers(ctx) -> None:
             ctx.set_user_state(user_id, None)
 
     # ------------------------------------------------------------------
-    # User report: photo
+    # Обращение пользователя: фото
     # ------------------------------------------------------------------
 
     @bot.message_handler(
@@ -185,7 +185,7 @@ def register_support_handlers(ctx) -> None:
             ctx.set_user_state(user_id, None)
 
     # ------------------------------------------------------------------
-    # User report: video / document
+    # Обращение пользователя: видео / документ
     # ------------------------------------------------------------------
 
     @bot.message_handler(

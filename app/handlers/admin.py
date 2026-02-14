@@ -1,4 +1,4 @@
-"""Admin panel handlers: /admin command, inline menu, settings, tickets, stats."""
+"""Обработчики админ-панели: команда /admin, инлайн-меню, настройки, обращения, статистика."""
 
 import logging
 import math
@@ -20,6 +20,7 @@ from app.constants import (
     CB_ADMIN_USERS_PAGE,
     CB_ADMIN_SETTINGS,
     CB_ADMIN_TICKETS,
+    CB_ADMIN_LOGS,
     CB_ADMIN_RESTART,
     CB_ADMIN_RESTART_CONFIRM,
     CB_ADMIN_BACK,
@@ -37,6 +38,7 @@ from app.constants import (
     STATE_AWAITING_LIMIT,
     STATE_AWAITING_WINDOW,
     STATE_AWAITING_CHANNEL_ID,
+    STATE_AWAITING_LOG_LINES,
     STATE_REPLYING_TICKET,
 )
 from app.keyboards import (
@@ -50,6 +52,7 @@ from app.keyboards import (
     build_ticket_actions,
     build_restart_confirm,
 )
+from app.logger import get_log_file_path
 from app.utils import is_admin, format_bytes
 
 logger = logging.getLogger(__name__)
@@ -58,17 +61,17 @@ USERS_PER_PAGE = 10
 
 
 def register_admin_handlers(ctx) -> None:
-    """Register all admin-related handlers."""
+    """Регистрирует все обработчики админ-панели."""
     bot = ctx.bot
     storage = ctx.storage
 
     # ------------------------------------------------------------------
-    # Helper: safe edit or fallback to send
+    # Вспомогательная функция: безопасное редактирование или отправка нового сообщения
     # ------------------------------------------------------------------
 
     def _safe_edit(chat_id: int, message_id: int, text: str,
                    reply_markup=None, parse_mode=None):
-        """Try to edit a message; fall back to sending a new one."""
+        """Пытается отредактировать сообщение; при неудаче отправляет новое."""
         try:
             bot.edit_message_text(
                 text, chat_id, message_id,
@@ -83,7 +86,7 @@ def register_admin_handlers(ctx) -> None:
             )
 
     # ------------------------------------------------------------------
-    # Helper: render paginated user list
+    # Вспомогательная функция: отображение постраничного списка пользователей
     # ------------------------------------------------------------------
 
     def _show_users_page(chat_id: int, message_id: int, page: int):
@@ -102,7 +105,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Helper: render ticket list
+    # Вспомогательная функция: отображение списка обращений
     # ------------------------------------------------------------------
 
     def _show_tickets(chat_id: int, message_id: int):
@@ -124,7 +127,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 1. /admin command
+    # 1. Команда /admin
     # ==================================================================
 
     @bot.message_handler(commands=["admin"])
@@ -143,7 +146,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 2. CB_ADMIN_BACK -> return to admin menu
+    # 2. CB_ADMIN_BACK -> возврат в главное меню админки
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_BACK)
@@ -162,7 +165,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 3. CB_ADMIN_STATS -> general stats
+    # 3. CB_ADMIN_STATS -> общая статистика
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_STATS)
@@ -186,7 +189,7 @@ def register_admin_handlers(ctx) -> None:
         _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
-    # 4. CB_ADMIN_STATS_PLATFORM -> stats by platform
+    # 4. CB_ADMIN_STATS_PLATFORM -> статистика по платформам
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_STATS_PLATFORM)
@@ -208,7 +211,7 @@ def register_admin_handlers(ctx) -> None:
         _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
-    # 5. CB_ADMIN_STATS_DAILY -> stats by day (7 days)
+    # 5. CB_ADMIN_STATS_DAILY -> статистика по дням (7 дней)
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_STATS_DAILY)
@@ -230,7 +233,7 @@ def register_admin_handlers(ctx) -> None:
         _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
-    # 6. CB_ADMIN_STATS_USERS -> top 10 users
+    # 6. CB_ADMIN_STATS_USERS -> топ-10 пользователей
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_STATS_USERS)
@@ -257,7 +260,7 @@ def register_admin_handlers(ctx) -> None:
         _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
-    # 7. CB_ADMIN_USERS -> paginated user list (page 0)
+    # 7. CB_ADMIN_USERS -> постраничный список пользователей (страница 0)
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_USERS)
@@ -270,7 +273,7 @@ def register_admin_handlers(ctx) -> None:
         _show_users_page(call.message.chat.id, call.message.message_id, 0)
 
     # ==================================================================
-    # 8. CB_ADMIN_USERS_PAGE|{page} -> navigate pages
+    # 8. CB_ADMIN_USERS_PAGE|{page} -> навигация по страницам
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -289,7 +292,7 @@ def register_admin_handlers(ctx) -> None:
         _show_users_page(call.message.chat.id, call.message.message_id, page)
 
     # ==================================================================
-    # 9. CB_ADMIN_USER_BLOCK|{user_id} -> block user
+    # 9. CB_ADMIN_USER_BLOCK|{user_id} -> блокировка пользователя
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -310,7 +313,7 @@ def register_admin_handlers(ctx) -> None:
         _show_users_page(call.message.chat.id, call.message.message_id, 0)
 
     # ==================================================================
-    # 10. CB_ADMIN_USER_UNBLOCK|{user_id} -> unblock user
+    # 10. CB_ADMIN_USER_UNBLOCK|{user_id} -> разблокировка пользователя
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -331,7 +334,7 @@ def register_admin_handlers(ctx) -> None:
         _show_users_page(call.message.chat.id, call.message.message_id, 0)
 
     # ==================================================================
-    # 11. CB_ADMIN_SETTINGS -> show settings
+    # 11. CB_ADMIN_SETTINGS -> отображение настроек
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_SETTINGS)
@@ -352,7 +355,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 12. CB_ADMIN_SET_LIMIT -> ask admin to type number
+    # 12. CB_ADMIN_SET_LIMIT -> запрос у админа нового числового лимита
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_SET_LIMIT)
@@ -366,7 +369,7 @@ def register_admin_handlers(ctx) -> None:
         bot.send_message(call.message.chat.id, "Введите новый лимит (число):")
 
     # ==================================================================
-    # 13. CB_ADMIN_SET_WINDOW -> ask admin to type hours
+    # 13. CB_ADMIN_SET_WINDOW -> запрос у админа периода в часах
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_SET_WINDOW)
@@ -380,7 +383,7 @@ def register_admin_handlers(ctx) -> None:
         bot.send_message(call.message.chat.id, "Введите период в часах (число):")
 
     # ==================================================================
-    # 14. Text handler: STATE_AWAITING_LIMIT
+    # 14. Обработчик текста: STATE_AWAITING_LIMIT
     # ==================================================================
 
     @bot.message_handler(func=lambda m: (
@@ -403,7 +406,7 @@ def register_admin_handlers(ctx) -> None:
         bot.send_message(message.chat.id, f"✅ Лимит обновлён: {value}")
 
     # ==================================================================
-    # 15. Text handler: STATE_AWAITING_WINDOW
+    # 15. Обработчик текста: STATE_AWAITING_WINDOW
     # ==================================================================
 
     @bot.message_handler(func=lambda m: (
@@ -427,7 +430,7 @@ def register_admin_handlers(ctx) -> None:
         bot.send_message(message.chat.id, f"✅ Период обновлён: {hours} ч.")
 
     # ==================================================================
-    # 16. CB_ADMIN_CHANNELS -> show channel list
+    # 16. CB_ADMIN_CHANNELS -> отображение списка каналов
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_CHANNELS)
@@ -446,7 +449,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 17. CB_ADMIN_CHANNELS|add -> ask admin to type channel ID
+    # 17. CB_ADMIN_CHANNELS|add -> запрос у админа ID канала
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -465,7 +468,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 18. Text handler: STATE_AWAITING_CHANNEL_ID
+    # 18. Обработчик текста: STATE_AWAITING_CHANNEL_ID
     # ==================================================================
 
     @bot.message_handler(func=lambda m: (
@@ -486,7 +489,7 @@ def register_admin_handlers(ctx) -> None:
             title = chat_info.title or str(chat_id)
             invite_link = chat_info.invite_link or None
         except Exception as exc:
-            logger.warning("Failed to get chat info for %s: %s", chat_id, exc)
+            logger.warning("Не удалось получить информацию о чате %s: %s", chat_id, exc)
             title = str(chat_id)
             invite_link = None
         storage.add_required_channel(chat_id, title, invite_link)
@@ -497,7 +500,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 19. CB_ADMIN_CHANNEL_DEL|{chat_id} -> remove channel
+    # 19. CB_ADMIN_CHANNEL_DEL|{chat_id} -> удаление канала
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -524,7 +527,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 20. CB_ADMIN_TICKETS -> list open tickets
+    # 20. CB_ADMIN_TICKETS -> список открытых обращений
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_TICKETS)
@@ -537,7 +540,7 @@ def register_admin_handlers(ctx) -> None:
         _show_tickets(call.message.chat.id, call.message.message_id)
 
     # ==================================================================
-    # 21. CB_TICKET_VIEW|{ticket_id} -> show ticket conversation
+    # 21. CB_TICKET_VIEW|{ticket_id} -> просмотр переписки по обращению
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -575,14 +578,14 @@ def register_admin_handlers(ctx) -> None:
             content = text or f"[{file_type or 'файл'}]"
             lines.append(f"{sender} ({msg_time}):\n{content}\n")
         text = "\n".join(lines)
-        # Telegram message limit
+        # Ограничение длины сообщения Telegram
         if len(text) > 4000:
             text = text[:4000] + "\n..."
         markup = build_ticket_actions(ticket_id)
         _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
 
     # ==================================================================
-    # 22. CB_TICKET_REPLY|{ticket_id} -> set state to reply
+    # 22. CB_TICKET_REPLY|{ticket_id} -> установка состояния для ответа
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -605,7 +608,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 23. CB_TICKET_CLOSE|{ticket_id} -> close ticket
+    # 23. CB_TICKET_CLOSE|{ticket_id} -> закрытие обращения
     # ==================================================================
 
     @bot.callback_query_handler(
@@ -630,7 +633,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 24. CB_TICKET_LIST -> same as CB_ADMIN_TICKETS
+    # 24. CB_TICKET_LIST -> аналог CB_ADMIN_TICKETS
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_TICKET_LIST)
@@ -643,7 +646,84 @@ def register_admin_handlers(ctx) -> None:
         _show_tickets(call.message.chat.id, call.message.message_id)
 
     # ==================================================================
-    # 25. CB_ADMIN_RESTART -> show confirmation
+    # CB_ADMIN_LOGS -> запрос количества строк логов
+    # ==================================================================
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_LOGS)
+    def cb_admin_logs(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        ctx.set_user_state(user_id, STATE_AWAITING_LOG_LINES)
+        log_path = get_log_file_path()
+        file_size = 0
+        try:
+            file_size = os.path.getsize(log_path)
+        except OSError:
+            pass
+        size_text = format_bytes(file_size) if file_size else "файл отсутствует"
+        bot.send_message(
+            call.message.chat.id,
+            f"📋 Файл логов: {size_text}\n\n"
+            "Сколько последних строк прислать? Введите число (например, 100):",
+        )
+
+    # ==================================================================
+    # Обработчик текста: STATE_AWAITING_LOG_LINES
+    # ==================================================================
+
+    @bot.message_handler(func=lambda m: (
+        m.text is not None
+        and is_admin(m.from_user.id)
+        and ctx.get_user_state(m.from_user.id) == STATE_AWAITING_LOG_LINES
+    ))
+    def handle_log_lines(message: types.Message):
+        user_id = message.from_user.id
+        text = message.text.strip()
+        try:
+            num_lines = int(text)
+            if num_lines <= 0:
+                raise ValueError
+        except ValueError:
+            bot.send_message(message.chat.id, "Введите положительное целое число.")
+            return
+        ctx.set_user_state(user_id, None)
+        log_path = get_log_file_path()
+        if not os.path.exists(log_path):
+            bot.send_message(message.chat.id, "Файл логов не найден.")
+            return
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                all_lines = f.readlines()
+            tail = all_lines[-num_lines:]
+            content = "".join(tail)
+            if not content.strip():
+                bot.send_message(message.chat.id, "Файл логов пуст.")
+                return
+            # Если текст помещается в сообщение — отправляем текстом
+            if len(content) <= 4000:
+                bot.send_message(
+                    message.chat.id,
+                    f"📋 Последние {len(tail)} строк:\n\n<pre>{content}</pre>",
+                    parse_mode="HTML",
+                )
+            else:
+                # Отправляем как документ
+                import io
+                doc = io.BytesIO(content.encode("utf-8"))
+                doc.name = f"logs_last_{len(tail)}.txt"
+                bot.send_document(
+                    message.chat.id, doc,
+                    caption=f"📋 Последние {len(tail)} строк логов",
+                )
+        except Exception:
+            logger.exception("Ошибка при чтении логов")
+            bot.send_message(message.chat.id, "Ошибка при чтении файла логов.")
+
+    # ==================================================================
+    # 25. CB_ADMIN_RESTART -> отображение подтверждения перезапуска
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_RESTART)
@@ -661,7 +741,7 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ==================================================================
-    # 26. CB_ADMIN_RESTART_CONFIRM -> restart bot
+    # 26. CB_ADMIN_RESTART_CONFIRM -> перезапуск бота
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_RESTART_CONFIRM)
@@ -672,11 +752,11 @@ def register_admin_handlers(ctx) -> None:
             return
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, "🔄 Перезапуск бота...")
-        logger.info("Bot restart requested by admin %s", user_id)
+        logger.info("Перезапуск бота запрошен администратором %s", user_id)
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
     # ==================================================================
-    # 27. Callback "noop" -> answer empty
+    # 27. Обратный вызов "noop" -> пустой ответ
     # ==================================================================
 
     @bot.callback_query_handler(func=lambda c: c.data == "noop")
@@ -684,7 +764,7 @@ def register_admin_handlers(ctx) -> None:
         bot.answer_callback_query(call.id)
 
     # ==================================================================
-    # Text handler: STATE_REPLYING_TICKET (text messages)
+    # Обработчик текста: STATE_REPLYING_TICKET (текстовые сообщения)
     # ==================================================================
 
     @bot.message_handler(func=lambda m: (
@@ -706,7 +786,7 @@ def register_admin_handlers(ctx) -> None:
         storage.add_ticket_message(
             ticket_id, user_id, is_admin=True, text=message.text,
         )
-        # Notify the user who created the ticket
+        # Уведомление пользователя, создавшего обращение
         ticket_user_id = ticket[1]
         try:
             bot.send_message(
@@ -714,12 +794,12 @@ def register_admin_handlers(ctx) -> None:
                 f"💬 Ответ по обращению #{ticket_id}:\n\n{message.text}",
             )
         except Exception as exc:
-            logger.warning("Failed to notify user %s about ticket reply: %s", ticket_user_id, exc)
+            logger.warning("Не удалось уведомить пользователя %s об ответе на обращение: %s", ticket_user_id, exc)
         ctx.set_user_state(user_id, None)
         bot.send_message(message.chat.id, f"✅ Ответ отправлен по обращению #{ticket_id}.")
 
     # ==================================================================
-    # Content handler: STATE_REPLYING_TICKET (photo)
+    # Обработчик контента: STATE_REPLYING_TICKET (фото)
     # ==================================================================
 
     @bot.message_handler(
@@ -753,12 +833,12 @@ def register_admin_handlers(ctx) -> None:
                 caption=f"💬 Ответ по обращению #{ticket_id}:\n\n{caption}" if caption else f"💬 Ответ по обращению #{ticket_id}",
             )
         except Exception as exc:
-            logger.warning("Failed to notify user %s about ticket reply: %s", ticket_user_id, exc)
+            logger.warning("Не удалось уведомить пользователя %s об ответе на обращение: %s", ticket_user_id, exc)
         ctx.set_user_state(user_id, None)
         bot.send_message(message.chat.id, f"✅ Ответ отправлен по обращению #{ticket_id}.")
 
     # ==================================================================
-    # Content handler: STATE_REPLYING_TICKET (video)
+    # Обработчик контента: STATE_REPLYING_TICKET (видео)
     # ==================================================================
 
     @bot.message_handler(
@@ -792,6 +872,6 @@ def register_admin_handlers(ctx) -> None:
                 caption=f"💬 Ответ по обращению #{ticket_id}:\n\n{caption}" if caption else f"💬 Ответ по обращению #{ticket_id}",
             )
         except Exception as exc:
-            logger.warning("Failed to notify user %s about ticket reply: %s", ticket_user_id, exc)
+            logger.warning("Не удалось уведомить пользователя %s об ответе на обращение: %s", ticket_user_id, exc)
         ctx.set_user_state(user_id, None)
         bot.send_message(message.chat.id, f"✅ Ответ отправлен по обращению #{ticket_id}.")
