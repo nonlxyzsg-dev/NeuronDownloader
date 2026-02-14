@@ -42,20 +42,23 @@ def append_youtube_client_hint(message: str) -> str:
 # --- Форматирование текста ---
 
 
-def format_caption(title: str) -> str:
+def format_caption(title: str, video_tag: str = "") -> str:
     """Формирует подпись к медиафайлу с заголовком и подписью бота."""
     title = title.strip()
+    tag_line = f"\n{video_tag}" if video_tag else ""
     if title:
-        caption = f"{title}\n\n{BOT_SIGNATURE}"
+        caption = f"{title}\n\n{BOT_SIGNATURE}{tag_line}"
     else:
-        caption = BOT_SIGNATURE
+        caption = f"{BOT_SIGNATURE}{tag_line}"
     if len(caption) <= TELEGRAM_CAPTION_MAX_LENGTH:
         return caption
-    allowed_title = max(0, TELEGRAM_CAPTION_MAX_LENGTH - len(BOT_SIGNATURE) - 2)
+    allowed_title = max(
+        0, TELEGRAM_CAPTION_MAX_LENGTH - len(BOT_SIGNATURE) - len(tag_line) - 2,
+    )
     trimmed_title = title[:allowed_title].rstrip()
     if trimmed_title:
-        return f"{trimmed_title}\n\n{BOT_SIGNATURE}"
-    return BOT_SIGNATURE[:TELEGRAM_CAPTION_MAX_LENGTH]
+        return f"{trimmed_title}\n\n{BOT_SIGNATURE}{tag_line}"
+    return (BOT_SIGNATURE + tag_line)[:TELEGRAM_CAPTION_MAX_LENGTH]
 
 
 def format_bytes(value: float | None) -> str:
