@@ -1,8 +1,10 @@
 """Скачивание видео через yt-dlp, разделение больших файлов (FFmpeg)."""
 
+import json
 import logging
 import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -32,6 +34,122 @@ def _is_h264(vcodec: str | None) -> bool:
         return False
     v = vcodec.lower()
     return v.startswith("avc") or v.startswith("h264")
+
+
+def _get_video_codec(file_path: str) -> str | None:
+    """Определяет видеокодек файла через ffprobe."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "json",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = json.loads(result.stdout)
+        streams = info.get("streams") or []
+        if streams:
+            return streams[0].get("codec_name")
+    except Exception:
+        logging.exception("ffprobe не удался для %s", file_path)
+    return None
+
+
+def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
+    """Перекодирует видео в H.264, если текущий кодек несовместим с Apple.
+
+    Возвращает (путь_к_файлу, было_перекодировано, исходный_кодек).
+    H.265 (HEVC), VP9, AV1 и другие кодеки вызывают зависание видео
+    на первом кадре в Telegram на iOS/macOS — звук идёт, картинка нет.
+    """
+    codec = _get_video_codec(file_path)
+    if codec is None:
+        logging.warning("Не удалось определить кодек для %s, пропускаем перекодирование", file_path)
+        return file_path, False, None
+
+    if codec == "h264":
+        logging.info("Видео уже в H.264, перекодирование не требуется: %s", file_path)
+        return file_path, False, codec
+
+    logging.info(
+        "Видеокодек %s не совместим с Apple, перекодируем в H.264: %s",
+        codec, file_path,
+    )
+
+    base, ext = os.path.splitext(file_path)
+    output_path = f"{base}_h264{ext}"
+
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c:v", "libx264",
+        "-preset", "faster",
+        "-crf", "23",
+        "-profile:v", "high",
+        "-level", "4.1",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    try:
+        subprocess.run(ffmpeg_cmd, capture_output=True, timeout=600, check=True)
+    except subprocess.CalledProcessError:
+        # Аудиокодек не совместим с mp4-контейнером — перекодируем и аудио
+        logging.warning("Копирование аудио не удалось, перекодируем аудио в AAC")
+        ffmpeg_cmd_full = [
+            "ffmpeg", "-y", "-i", file_path,
+            "-c:v", "libx264",
+            "-preset", "faster",
+            "-crf", "23",
+            "-profile:v", "high",
+            "-level", "4.1",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            subprocess.run(ffmpeg_cmd_full, capture_output=True, timeout=600, check=True)
+        except Exception:
+            logging.exception("FFmpeg перекодирование (полное) не удалось для %s", file_path)
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return file_path, False, codec
+    except Exception:
+        logging.exception("FFmpeg перекодирование не удалось для %s", file_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path, False, codec
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        logging.error("Перекодированный файл пустой или отсутствует: %s", output_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path, False, codec
+
+    # Заменяем оригинал перекодированным файлом
+    try:
+        os.remove(file_path)
+        os.replace(output_path, file_path)
+    except OSError:
+        logging.exception("Не удалось заменить %s перекодированным файлом", file_path)
+        if os.path.exists(output_path):
+            return output_path, True, codec
+        return file_path, False, codec
+
+    logging.info(
+        "Перекодирование завершено: %s (кодек %s -> h264)",
+        file_path, codec,
+    )
+    return file_path, True, codec
 
 
 class YtDlpLogger:

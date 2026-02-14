@@ -61,6 +61,19 @@ CB_TICKET_LIST = "tik_l"
 # Видео канала
 CB_CHANNEL_VIDEOS = "chvid"
 
+# Инциденты воспроизведения видео
+CB_VIDEO_REPORT = "vrpt"
+CB_ADMIN_INCIDENTS = "adm_inc"
+CB_INCIDENT_VIEW = "inc_v"
+CB_INCIDENT_STATUS = "inc_ss"
+CB_INCIDENT_LIST = "inc_l"
+
+# Статусы инцидентов
+INCIDENT_REPORTED = "reported"
+INCIDENT_IN_PROGRESS = "in_progress"
+INCIDENT_FIXED = "fixed"
+INCIDENT_WONT_FIX = "wont_fix"
+
 # --- Эмодзи ---
 EMOJI_VIDEO = "\U0001f3ac"       # 🎬
 EMOJI_BEST = "\U0001f680"        # 🚀
@@ -81,6 +94,7 @@ EMOJI_RESTART = "\U0001f504"    # 🔄
 EMOJI_CHANNEL = "\U0001f4e2"    # 📢
 EMOJI_ALERT = "\U0001f6a8"      # 🚨
 EMOJI_LOGS = "\U0001f4cb"       # 📋
+EMOJI_INCIDENT = "\U0001f6a7"   # 🚧
 
 # --- Типы действий в чате ---
 ACTION_UPLOAD_VIDEO = "upload_video"

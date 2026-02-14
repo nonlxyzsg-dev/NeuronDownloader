@@ -8,6 +8,7 @@ from app.constants import (
     CB_ADMIN_BACK,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
+    CB_ADMIN_INCIDENTS,
     CB_ADMIN_LOGS,
     CB_ADMIN_RESTART,
     CB_ADMIN_RESTART_CONFIRM,
@@ -24,16 +25,21 @@ from app.constants import (
     CB_ADMIN_USER_BLOCK,
     CB_ADMIN_USER_UNBLOCK,
     CB_DOWNLOAD,
+    CB_INCIDENT_LIST,
+    CB_INCIDENT_STATUS,
+    CB_INCIDENT_VIEW,
     CB_SPLIT_NO,
     CB_SPLIT_YES,
     CB_TICKET_CLOSE,
     CB_TICKET_LIST,
     CB_TICKET_REPLY,
     CB_TICKET_VIEW,
+    CB_VIDEO_REPORT,
     EMOJI_AUDIO,
     EMOJI_BACK,
     EMOJI_BEST,
     EMOJI_CHANNEL,
+    EMOJI_INCIDENT,
     EMOJI_LOGS,
     EMOJI_RESTART,
     EMOJI_SETTINGS,
@@ -41,8 +47,13 @@ from app.constants import (
     EMOJI_TICKETS,
     EMOJI_USERS,
     EMOJI_VIDEO,
+    EMOJI_WARNING,
     FORMAT_AUDIO,
     FORMAT_BEST,
+    INCIDENT_FIXED,
+    INCIDENT_IN_PROGRESS,
+    INCIDENT_REPORTED,
+    INCIDENT_WONT_FIX,
     MENU_ADMIN,
     MENU_REPORT,
     TELEGRAM_CALLBACK_DATA_MAX_BYTES,
@@ -145,23 +156,29 @@ def build_split_confirm_keyboard(token: str) -> types.InlineKeyboardMarkup:
 # --- Клавиатуры админ-панели ---
 
 
-def build_admin_menu(open_tickets: int = 0) -> types.InlineKeyboardMarkup:
+def build_admin_menu(open_tickets: int = 0, open_incidents: int = 0) -> types.InlineKeyboardMarkup:
     """Строит главное меню админ-панели."""
     markup = types.InlineKeyboardMarkup(row_width=2)
-    tickets_label = f"{EMOJI_TICKETS} \u041e\u0431\u0440\u0430\u0449\u0435\u043d\u0438\u044f"
+    tickets_label = f"{EMOJI_TICKETS} Обращения"
     if open_tickets > 0:
         tickets_label += f" ({open_tickets})"
+    incidents_label = f"{EMOJI_INCIDENT} Инциденты"
+    if open_incidents > 0:
+        incidents_label += f" ({open_incidents})"
     markup.row(
-        types.InlineKeyboardButton(text=f"{EMOJI_STATS} \u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430", callback_data=CB_ADMIN_STATS),
-        types.InlineKeyboardButton(text=f"{EMOJI_USERS} \u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438", callback_data=CB_ADMIN_USERS),
+        types.InlineKeyboardButton(text=f"{EMOJI_STATS} Статистика", callback_data=CB_ADMIN_STATS),
+        types.InlineKeyboardButton(text=f"{EMOJI_USERS} Пользователи", callback_data=CB_ADMIN_USERS),
     )
     markup.row(
-        types.InlineKeyboardButton(text=f"{EMOJI_SETTINGS} \u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", callback_data=CB_ADMIN_SETTINGS),
+        types.InlineKeyboardButton(text=f"{EMOJI_SETTINGS} Настройки", callback_data=CB_ADMIN_SETTINGS),
         types.InlineKeyboardButton(text=tickets_label, callback_data=CB_ADMIN_TICKETS),
     )
     markup.row(
-        types.InlineKeyboardButton(text=f"{EMOJI_LOGS} \u041b\u043e\u0433\u0438", callback_data=CB_ADMIN_LOGS),
-        types.InlineKeyboardButton(text=f"{EMOJI_RESTART} \u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u043a \u0431\u043e\u0442\u0430", callback_data=CB_ADMIN_RESTART),
+        types.InlineKeyboardButton(text=incidents_label, callback_data=CB_ADMIN_INCIDENTS),
+        types.InlineKeyboardButton(text=f"{EMOJI_LOGS} Логи", callback_data=CB_ADMIN_LOGS),
+    )
+    markup.row(
+        types.InlineKeyboardButton(text=f"{EMOJI_RESTART} Перезапуск бота", callback_data=CB_ADMIN_RESTART),
     )
     return markup
 
@@ -291,7 +308,87 @@ def build_restart_confirm() -> types.InlineKeyboardMarkup:
     """Строит клавиатуру подтверждения перезапуска бота."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.row(
-        types.InlineKeyboardButton(text="\u2705 \u0414\u0430, \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c", callback_data=CB_ADMIN_RESTART_CONFIRM),
-        types.InlineKeyboardButton(text=f"{EMOJI_BACK} \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=CB_ADMIN_BACK),
+        types.InlineKeyboardButton(text="\u2705 Да, перезапустить", callback_data=CB_ADMIN_RESTART_CONFIRM),
+        types.InlineKeyboardButton(text=f"{EMOJI_BACK} Отмена", callback_data=CB_ADMIN_BACK),
     )
+    return markup
+
+
+# --- Клавиатуры инцидентов воспроизведения видео ---
+
+
+def build_video_report_button(token: str) -> types.InlineKeyboardMarkup:
+    """Строит кнопку «Не воспроизводится» под отправленным видео."""
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton(
+            text=f"{EMOJI_WARNING} Не воспроизводится",
+            callback_data=_safe_callback_data(f"{CB_VIDEO_REPORT}|{token}"),
+        )
+    )
+    return markup
+
+
+_INCIDENT_STATUS_LABELS = {
+    INCIDENT_REPORTED: "Сообщено",
+    INCIDENT_IN_PROGRESS: "В работе",
+    INCIDENT_FIXED: "Исправлено",
+    INCIDENT_WONT_FIX: "Не будет исправлено",
+}
+
+
+def incident_status_label(status: str) -> str:
+    """Возвращает человекочитаемую метку статуса инцидента."""
+    return _INCIDENT_STATUS_LABELS.get(status, status)
+
+
+def build_admin_incidents_list(
+    incidents: list[tuple],
+    users_map: dict[int, str],
+) -> types.InlineKeyboardMarkup:
+    """Строит список инцидентов для админ-панели."""
+    markup = types.InlineKeyboardMarkup()
+    for inc in incidents[:20]:
+        inc_id, user_id, _url, platform, _fmt, codec, _res, _size, status, created_at, _resolved = inc
+        username = users_map.get(user_id, str(user_id))
+        date_part = created_at[:10] if created_at else ""
+        status_lbl = incident_status_label(status)
+        plat = platform or "?"
+        cod = codec or "?"
+        label = f"#{inc_id} {plat}/{cod} @{username} [{status_lbl}] ({date_part})"
+        # Обрезаем для отображения
+        if len(label) > 60:
+            label = label[:57] + "..."
+        markup.add(types.InlineKeyboardButton(
+            text=label,
+            callback_data=_safe_callback_data(f"{CB_INCIDENT_VIEW}|{inc_id}"),
+        ))
+    markup.row(types.InlineKeyboardButton(text=f"{EMOJI_BACK} Назад", callback_data=CB_ADMIN_BACK))
+    return markup
+
+
+def build_incident_actions(incident_id: int, current_status: str) -> types.InlineKeyboardMarkup:
+    """Строит кнопки смены статуса для инцидента."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    transitions = []
+    if current_status == INCIDENT_REPORTED:
+        transitions = [
+            ("В работу", INCIDENT_IN_PROGRESS),
+            ("Исправлено", INCIDENT_FIXED),
+            ("Не исправлять", INCIDENT_WONT_FIX),
+        ]
+    elif current_status == INCIDENT_IN_PROGRESS:
+        transitions = [
+            ("Исправлено", INCIDENT_FIXED),
+            ("Не исправлять", INCIDENT_WONT_FIX),
+        ]
+    buttons = []
+    for label, new_status in transitions:
+        buttons.append(types.InlineKeyboardButton(
+            text=label,
+            callback_data=_safe_callback_data(f"{CB_INCIDENT_STATUS}|{incident_id}|{new_status}"),
+        ))
+    if buttons:
+        markup.row(*buttons)
+    markup.row(types.InlineKeyboardButton(text=f"{EMOJI_BACK} К инцидентам", callback_data=CB_INCIDENT_LIST))
     return markup

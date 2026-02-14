@@ -21,6 +21,7 @@ from app.constants import (
     CB_DOWNLOAD,
     CB_SPLIT_YES,
     CB_SPLIT_NO,
+    CB_VIDEO_REPORT,
     DOWNLOAD_TIMEOUT_SECONDS,
     EMOJI_DOWNLOAD,
     EMOJI_DONE,
@@ -41,6 +42,8 @@ from app.keyboards import (
     build_main_menu,
     build_split_confirm_keyboard,
 )
+from app.downloader import ensure_h264
+from app.keyboards import build_video_report_button
 from app.utils import (
     append_youtube_client_hint,
     format_bytes,
@@ -66,6 +69,9 @@ def register_download_handlers(ctx) -> None:
     # Временное хранилище: токен разделения -> информация о файле
     _split_pending: dict[str, dict] = {}
 
+    # Временное хранилище: токен отчёта -> метаданные видео
+    _video_meta: dict[str, dict] = {}
+
     def _send_media(
         user_id: int,
         chat_id: int,
@@ -74,6 +80,7 @@ def register_download_handlers(ctx) -> None:
         audio_only: bool,
         file_size: int | None = None,
         video_tag: str = "",
+        reply_markup=None,
     ) -> None:
         """Отправляет аудио/видео пользователю с логикой повторных попыток."""
         caption = format_caption(title, video_tag=video_tag)
@@ -98,6 +105,7 @@ def register_download_handlers(ctx) -> None:
                 caption=caption,
                 timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                 supports_streaming=True,
+                reply_markup=reply_markup,
             )
         upload_duration = time.monotonic() - upload_start
         upload_speed = (
@@ -312,6 +320,34 @@ def register_download_handlers(ctx) -> None:
                     file_path, url,
                 )
 
+                # Перекодируем видео в H.264, если кодек несовместим с Apple
+                original_codec = None
+                if not audio_only:
+                    if progress_message_id:
+                        try:
+                            bot.edit_message_text(
+                                f"{EMOJI_DONE} Скачано. Проверяем совместимость\u2026",
+                                chat_id, progress_message_id,
+                            )
+                        except Exception:
+                            pass
+                    reencode_start = time.monotonic()
+                    file_path, was_reencoded, original_codec = ensure_h264(file_path)
+                    logging.info(
+                        "Кодек видео: %s (перекодировано=%s, url=%s)",
+                        original_codec or "неизвестен",
+                        was_reencoded, url,
+                    )
+                    if was_reencoded:
+                        reencode_duration = time.monotonic() - reencode_start
+                        total_bytes = get_file_size(file_path)
+                        logging.info(
+                            "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
+                            reencode_duration,
+                            format_bytes(total_bytes) if total_bytes else "неизвестно",
+                            file_path,
+                        )
+
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
                     split_token = uuid.uuid4().hex[:12]
@@ -359,10 +395,26 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
 
+                # Кнопка «Не воспроизводится» под видео
+                report_markup = None
+                if not audio_only:
+                    report_token = uuid.uuid4().hex[:12]
+                    _video_meta[report_token] = {
+                        "user_id": user_id,
+                        "url": url,
+                        "platform": info.get("extractor_key", "unknown"),
+                        "format_id": selected_format or "best",
+                        "codec": original_codec,
+                        "resolution": str(info.get("height") or ""),
+                        "file_size": total_bytes,
+                    }
+                    report_markup = build_video_report_button(report_token)
+
                 with open(file_path, "rb") as handle:
                     _send_media(
                         user_id, chat_id, handle, title,
                         audio_only, file_size=total_bytes,
+                        reply_markup=report_markup,
                     )
 
                 try:
@@ -724,9 +776,55 @@ def register_download_handlers(ctx) -> None:
             pass
         try:
             bot.edit_message_text(
-                "\u0425\u043e\u0440\u043e\u0448\u043e. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0432\u044b\u0431\u0440\u0430\u0442\u044c \u0431\u043e\u043b\u0435\u0435 \u043d\u0438\u0437\u043a\u043e\u0435 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u043e.",
+                "Хорошо. Попробуйте выбрать более низкое качество.",
                 call.message.chat.id,
                 call.message.message_id,
             )
         except Exception:
             pass
+
+    # --- Обработчик отчётов о проблемах с воспроизведением ---
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data and call.data.startswith(f"{CB_VIDEO_REPORT}|")
+    )
+    def handle_video_report(call: types.CallbackQuery) -> None:
+        token = call.data.split("|", 1)[1]
+        meta = _video_meta.pop(token, None)
+        if meta is None:
+            bot.answer_callback_query(
+                call.id,
+                "Данные устарели. Если проблема сохраняется, скачайте видео заново.",
+                show_alert=True,
+            )
+            return
+        bot.answer_callback_query(call.id)
+        incident_id = storage.create_video_incident(
+            user_id=call.from_user.id,
+            url=meta.get("url"),
+            platform=meta.get("platform"),
+            format_id=meta.get("format_id"),
+            codec=meta.get("codec"),
+            resolution=meta.get("resolution"),
+            file_size=meta.get("file_size"),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            "Спасибо за обратную связь! Мы зафиксировали проблему "
+            f"(#{incident_id}) и обязательно её изучим.",
+        )
+        # Уведомляем админов
+        platform = meta.get("platform") or "?"
+        codec = meta.get("codec") or "?"
+        resolution = meta.get("resolution") or "?"
+        user_row = storage.get_user(call.from_user.id)
+        username = ""
+        if user_row:
+            username = user_row[1] or user_row[2] or ""
+        user_label = f"@{username}" if username else str(call.from_user.id)
+        notify_admin_error(
+            bot, call.from_user.id, username,
+            f"Инцидент #{incident_id}: видео не воспроизводится "
+            f"({platform}, кодек={codec}, {resolution}p)",
+            Exception(meta.get("url", "")),
+        )
