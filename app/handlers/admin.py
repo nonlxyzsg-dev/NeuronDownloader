@@ -702,22 +702,14 @@ def register_admin_handlers(ctx) -> None:
             if not content.strip():
                 bot.send_message(message.chat.id, "Файл логов пуст.")
                 return
-            # Если текст помещается в сообщение — отправляем текстом
-            if len(content) <= 4000:
-                bot.send_message(
-                    message.chat.id,
-                    f"📋 Последние {len(tail)} строк:\n\n<pre>{content}</pre>",
-                    parse_mode="HTML",
-                )
-            else:
-                # Отправляем как документ
-                import io
-                doc = io.BytesIO(content.encode("utf-8"))
-                doc.name = f"logs_last_{len(tail)}.txt"
-                bot.send_document(
-                    message.chat.id, doc,
-                    caption=f"📋 Последние {len(tail)} строк логов",
-                )
+            # Всегда отправляем как документ — удобнее для чтения
+            import io
+            doc = io.BytesIO(content.encode("utf-8"))
+            doc.name = f"logs_last_{len(tail)}.txt"
+            bot.send_document(
+                message.chat.id, doc,
+                caption=f"📋 Последние {len(tail)} строк логов",
+            )
         except Exception:
             logger.exception("Ошибка при чтении логов")
             bot.send_message(message.chat.id, "Ошибка при чтении файла логов.")

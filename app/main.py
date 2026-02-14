@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from telebot import TeleBot, types
 
 from app.config import (
+    ADMIN_IDS,
     BOT_TOKEN,
     DATA_DIR,
     FREE_DOWNLOAD_LIMIT,
@@ -188,6 +189,7 @@ def main() -> None:
 
     setup_logging()
     os.makedirs(DATA_DIR, exist_ok=True)
+    logging.info("Бот запускается...")
 
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()
@@ -214,6 +216,12 @@ def main() -> None:
 
     # Регистрация обработчиков (сначала админ, затем поддержка, потом скачивание/catch-all)
     register_all_handlers(ctx)
+    logging.info(
+        "Бот запущен (пользователей: %d, админов: %d, каналов: %d)",
+        len(storage.list_users()),
+        len(ADMIN_IDS),
+        len(REQUIRED_CHAT_IDS),
+    )
 
     # --- Обработка завершения ---
 
