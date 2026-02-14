@@ -119,10 +119,16 @@ class VideoDownloader:
         """Формирует базовые опции для yt-dlp."""
         output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
-            # Предпочитаем H.264 (AVC) — универсально совместим с Apple-устройствами.
-            # VP9/AV1 в mp4-контейнере не декодируются на iOS/macOS в Telegram:
-            # звук играет, а видео зависает на первом кадре.
-            "format": "bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best",
+            # Предпочитаем H.264 (AVC) видео + AAC аудио — универсально совместимо
+            # с Apple-устройствами. VP9/AV1 видео и Opus аудио в mp4-контейнере
+            # не декодируются на iOS/macOS в Telegram.
+            "format": (
+                "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
+                "bestvideo[vcodec^=avc]+bestaudio/"
+                "bestvideo+bestaudio[acodec^=mp4a]/"
+                "bestvideo+bestaudio/"
+                "best"
+            ),
             "quiet": True,
             "skip_download": skip_download,
             "noplaylist": True,
@@ -255,7 +261,12 @@ class VideoDownloader:
                 }
             ]
         elif format_id:
-            ydl_opts["format"] = f"{format_id}+bestaudio/best"
+            # Предпочитаем AAC аудио — Opus в mp4 не воспроизводится на Apple
+            ydl_opts["format"] = (
+                f"{format_id}+bestaudio[acodec^=mp4a]/"
+                f"{format_id}+bestaudio/"
+                "best"
+            )
         if progress_callback:
             ydl_opts["progress_hooks"] = [progress_callback]
         with YoutubeDL(ydl_opts) as ydl:
