@@ -14,6 +14,7 @@ class Storage:
         os.makedirs(DATA_DIR, exist_ok=True)
         self.db_path = os.path.join(DATA_DIR, DB_FILENAME)
         self._init_db()
+        self._migrate_db()
 
     def _ensure_db(self) -> None:
         """Проверяет наличие БД и таблиц, при необходимости создаёт."""
@@ -31,6 +32,14 @@ class Storage:
         """Возвращает соединение с БД."""
         self._ensure_db()
         return sqlite3.connect(self.db_path)
+
+    def _migrate_db(self) -> None:
+        """Добавляет недостающие колонки (миграции)."""
+        with sqlite3.connect(self.db_path) as conn:
+            # device_type в users
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "device_type" not in cols:
+                conn.execute("ALTER TABLE users ADD COLUMN device_type TEXT")
 
     def _init_db(self) -> None:
         """Создаёт все таблицы БД."""
@@ -245,6 +254,24 @@ class Storage:
             conn.execute(
                 "UPDATE users SET last_inline_message_id = ? WHERE user_id = ?",
                 (message_id, user_id),
+            )
+
+    def get_user_device_type(self, user_id: int) -> str | None:
+        """Возвращает тип устройства пользователя ('android', 'iphone' или None)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT device_type FROM users WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cur.fetchone()
+        return row[0] if row else None
+
+    def set_user_device_type(self, user_id: int, device_type: str) -> None:
+        """Устанавливает тип устройства пользователя."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET device_type = ? WHERE user_id = ?",
+                (device_type, user_id),
             )
 
     # --- Загрузки ---

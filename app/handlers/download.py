@@ -18,10 +18,15 @@ from app.constants import (
     ACTION_TYPING,
     ACTION_UPLOAD_AUDIO,
     ACTION_UPLOAD_VIDEO,
+    CB_DEVICE_ANDROID,
+    CB_DEVICE_IPHONE,
     CB_DOWNLOAD,
+    CB_REENCODE,
     CB_SPLIT_YES,
     CB_SPLIT_NO,
     CB_VIDEO_REPORT,
+    DEVICE_ANDROID,
+    DEVICE_IPHONE,
     DOWNLOAD_TIMEOUT_SECONDS,
     EMOJI_DOWNLOAD,
     EMOJI_DONE,
@@ -38,12 +43,14 @@ from app.constants import (
 )
 from app.keyboards import (
     build_channel_buttons,
+    build_device_selection,
     build_format_keyboard,
     build_main_menu,
     build_split_confirm_keyboard,
+    build_video_buttons,
+    build_video_report_button,
 )
-from app.downloader import ensure_h264
-from app.keyboards import build_video_report_button
+from app.downloader import _get_video_codec, ensure_h264
 from app.utils import (
     append_youtube_client_hint,
     format_bytes,
@@ -71,6 +78,9 @@ def register_download_handlers(ctx) -> None:
 
     # Временное хранилище: токен отчёта -> метаданные видео
     _video_meta: dict[str, dict] = {}
+
+    # Временное хранилище: токен перекодирования -> данные для повторной загрузки
+    _reencode_meta: dict[str, dict] = {}
 
     def _send_media(
         user_id: int,
@@ -320,33 +330,53 @@ def register_download_handlers(ctx) -> None:
                     file_path, url,
                 )
 
-                # Перекодируем видео в H.264, если кодек несовместим с Apple
+                # Проверяем кодек и решаем, нужна ли перекодировка
                 original_codec = None
+                was_reencoded = False
+                needs_reencode = False
+                user_device = storage.get_user_device_type(user_id)
                 if not audio_only:
-                    if progress_message_id:
-                        try:
-                            bot.edit_message_text(
-                                f"{EMOJI_DONE} Скачано. Проверяем совместимость\u2026",
-                                chat_id, progress_message_id,
-                            )
-                        except Exception:
-                            pass
-                    reencode_start = time.monotonic()
-                    file_path, was_reencoded, original_codec = ensure_h264(file_path)
+                    original_codec = _get_video_codec(file_path)
                     logging.info(
-                        "Кодек видео: %s (перекодировано=%s, url=%s)",
+                        "Кодек видео: %s (устройство=%s, url=%s)",
                         original_codec or "неизвестен",
-                        was_reencoded, url,
+                        user_device or "не указано", url,
                     )
-                    if was_reencoded:
-                        reencode_duration = time.monotonic() - reencode_start
-                        total_bytes = get_file_size(file_path)
-                        logging.info(
-                            "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
-                            reencode_duration,
-                            format_bytes(total_bytes) if total_bytes else "неизвестно",
-                            file_path,
-                        )
+                    # Определяем, нужна ли перекодировка
+                    codec_ok = original_codec == "h264" if original_codec else True
+                    if not codec_ok:
+                        # iPhone или неизвестное устройство — перекодируем автоматически
+                        if user_device != DEVICE_ANDROID:
+                            size_mb = (total_bytes or 0) / (1024 * 1024)
+                            est_minutes = max(1, int(size_mb * 0.6))
+                            if progress_message_id:
+                                try:
+                                    bot.edit_message_text(
+                                        f"\U0001f504 Перекодируем видео в формат для iPhone "
+                                        f"(кодек {original_codec} \u2192 H.264)...\n"
+                                        f"\u23f3 Это может занять ~{est_minutes} мин.",
+                                        chat_id, progress_message_id,
+                                    )
+                                except Exception:
+                                    pass
+                            reencode_start = time.monotonic()
+                            file_path, was_reencoded, original_codec = ensure_h264(file_path)
+                            if was_reencoded:
+                                reencode_duration = time.monotonic() - reencode_start
+                                total_bytes = get_file_size(file_path)
+                                logging.info(
+                                    "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
+                                    reencode_duration,
+                                    format_bytes(total_bytes) if total_bytes else "неизвестно",
+                                    file_path,
+                                )
+                        else:
+                            # Android — пропускаем перекодировку, пометим для кнопки
+                            needs_reencode = True
+                            logging.info(
+                                "Перекодировка пропущена (Android): кодек=%s, url=%s",
+                                original_codec, url,
+                            )
 
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
@@ -395,7 +425,7 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
 
-                # Кнопка «Не воспроизводится» под видео
+                # Кнопки под видео: отчёт + опционально перекодирование
                 report_markup = None
                 if not audio_only:
                     report_token = uuid.uuid4().hex[:12]
@@ -408,7 +438,17 @@ def register_download_handlers(ctx) -> None:
                         "resolution": str(info.get("height") or ""),
                         "file_size": total_bytes,
                     }
-                    report_markup = build_video_report_button(report_token)
+                    reencode_token = None
+                    if needs_reencode:
+                        reencode_token = uuid.uuid4().hex[:12]
+                        _reencode_meta[reencode_token] = {
+                            "user_id": user_id,
+                            "url": url,
+                            "title": title,
+                            "selected_format": selected_format,
+                            "chat_id": chat_id,
+                        }
+                    report_markup = build_video_buttons(report_token, reencode_token)
 
                 with open(file_path, "rb") as handle:
                     _send_media(
@@ -504,6 +544,62 @@ def register_download_handlers(ctx) -> None:
                 "\u0435\u0441\u043b\u0438 \u0447\u0442\u043e-\u0442\u043e \u043f\u043e\u0448\u043b\u043e \u043d\u0435 \u0442\u0430\u043a."
             ),
             reply_markup=build_main_menu(is_admin=user_is_admin),
+        )
+        # Спрашиваем тип устройства, если ещё не указан
+        device_type = storage.get_user_device_type(message.from_user.id)
+        if not device_type:
+            bot.send_message(
+                message.chat.id,
+                "\U0001f4f1 На каком устройстве вы смотрите видео?\n\n"
+                "Это поможет нам отправлять видео в наиболее совместимом формате. "
+                "На iPhone некоторые видео могут не воспроизводиться без перекодирования.",
+                reply_markup=build_device_selection(),
+            )
+
+    # --- Обработчики выбора устройства ---
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data in (CB_DEVICE_ANDROID, CB_DEVICE_IPHONE)
+    )
+    def handle_device_selection(call: types.CallbackQuery) -> None:
+        ctx.ensure_user(call.from_user)
+        if call.data == CB_DEVICE_ANDROID:
+            device = DEVICE_ANDROID
+            response = (
+                "\U0001f4f1 Отлично, Android! Видео будут отправляться максимально быстро.\n\n"
+                "Если вам понадобится перекодировать видео для iPhone "
+                "(например, переслать другу), кнопка будет под видео."
+            )
+        else:
+            device = DEVICE_IPHONE
+            response = (
+                "\U0001f34f Понял, iPhone! Видео с несовместимым кодеком будут "
+                "автоматически перекодироваться в H.264 перед отправкой.\n\n"
+                "Это может занять 1\u20133 минуты, но зато видео гарантированно воспроизведётся."
+            )
+        storage.set_user_device_type(call.from_user.id, device)
+        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_text(
+                response,
+                call.message.chat.id,
+                call.message.message_id,
+            )
+        except Exception:
+            bot.send_message(call.message.chat.id, response)
+
+    @bot.message_handler(commands=["device"])
+    def handle_device_command(message: types.Message) -> None:
+        """Позволяет пользователю сменить тип устройства."""
+        ctx.ensure_user(message.from_user)
+        if not ctx.check_access(message.from_user.id, message.chat.id):
+            return
+        current = storage.get_user_device_type(message.from_user.id)
+        label = {"android": "Android", "iphone": "iPhone"}.get(current or "", "не указано")
+        bot.send_message(
+            message.chat.id,
+            f"\U0001f4f1 Текущее устройство: {label}\n\nВыберите новое:",
+            reply_markup=build_device_selection(),
         )
 
     @bot.message_handler(func=lambda msg: msg.text == MENU_ADMIN and is_admin(msg.from_user.id))
@@ -828,3 +924,107 @@ def register_download_handlers(ctx) -> None:
             f"({platform}, кодек={codec}, {resolution}p)",
             Exception(meta.get("url", "")),
         )
+
+    # --- Обработчик перекодирования по запросу ---
+
+    @bot.callback_query_handler(
+        func=lambda call: call.data and call.data.startswith(f"{CB_REENCODE}|")
+    )
+    def handle_reencode(call: types.CallbackQuery) -> None:
+        token = call.data.split("|", 1)[1]
+        meta = _reencode_meta.pop(token, None)
+        if meta is None:
+            bot.answer_callback_query(
+                call.id,
+                "Данные устарели. Скачайте видео заново.",
+                show_alert=True,
+            )
+            return
+        bot.answer_callback_query(call.id)
+        re_user_id = meta["user_id"]
+        re_url = meta["url"]
+        re_title = meta["title"]
+        re_format = meta["selected_format"]
+        re_chat_id = meta["chat_id"]
+
+        progress_msg = bot.send_message(
+            re_chat_id,
+            f"\U0001f504 Перекодировка запрошена. Скачиваем видео повторно\u2026",
+        )
+        progress_mid = progress_msg.message_id
+
+        def _reencode_job() -> None:
+            try:
+                file_path, info = downloader.download(
+                    re_url, re_format, audio_only=False,
+                )
+                total_bytes = get_file_size(file_path)
+                size_mb = (total_bytes or 0) / (1024 * 1024)
+                est_minutes = max(1, int(size_mb * 0.6))
+                try:
+                    bot.edit_message_text(
+                        f"\U0001f504 Перекодируем видео в H.264...\n"
+                        f"\u23f3 Это может занять ~{est_minutes} мин.",
+                        re_chat_id, progress_mid,
+                    )
+                except Exception:
+                    pass
+                reencode_start = time.monotonic()
+                file_path, was_reencoded, codec = ensure_h264(file_path)
+                reencode_duration = time.monotonic() - reencode_start
+                total_bytes = get_file_size(file_path)
+                logging.info(
+                    "Перекодирование по запросу за %.2fs (кодек=%s, размер=%s, url=%s)",
+                    reencode_duration, codec,
+                    format_bytes(total_bytes) if total_bytes else "?",
+                    re_url,
+                )
+                if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
+                    try:
+                        bot.edit_message_text(
+                            f"{EMOJI_ERROR} Перекодированный файл слишком большой "
+                            f"({format_bytes(total_bytes)}). Попробуйте меньшее качество.",
+                            re_chat_id, progress_mid,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    return
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_DONE} Перекодировано. Отправляем\u2026",
+                        re_chat_id, progress_mid,
+                    )
+                except Exception:
+                    pass
+                with open(file_path, "rb") as handle:
+                    _send_media(
+                        re_user_id, re_chat_id, handle,
+                        f"{re_title} (H.264)", False,
+                        file_size=total_bytes,
+                    )
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                try:
+                    bot.delete_message(re_chat_id, progress_mid)
+                except Exception:
+                    pass
+            except Exception as exc:
+                logging.exception("Ошибка перекодировки по запросу: %s", re_url)
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_ERROR} Не удалось перекодировать: {exc}",
+                        re_chat_id, progress_mid,
+                    )
+                except Exception:
+                    pass
+
+        try:
+            download_manager.submit_user(re_user_id, _reencode_job)
+        except queue.Full:
+            bot.send_message(re_chat_id, "Очередь переполнена. Попробуйте позже.")

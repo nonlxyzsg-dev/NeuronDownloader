@@ -68,6 +68,17 @@ CB_INCIDENT_VIEW = "inc_v"
 CB_INCIDENT_STATUS = "inc_ss"
 CB_INCIDENT_LIST = "inc_l"
 
+# Выбор устройства
+CB_DEVICE_ANDROID = "dev_a"
+CB_DEVICE_IPHONE = "dev_i"
+
+# Перекодирование по запросу
+CB_REENCODE = "reenc"
+
+# Типы устройств
+DEVICE_ANDROID = "android"
+DEVICE_IPHONE = "iphone"
+
 # Статусы инцидентов
 INCIDENT_REPORTED = "reported"
 INCIDENT_IN_PROGRESS = "in_progress"

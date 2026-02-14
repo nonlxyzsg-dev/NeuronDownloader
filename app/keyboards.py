@@ -24,10 +24,13 @@ from app.constants import (
     CB_ADMIN_USERS_PAGE,
     CB_ADMIN_USER_BLOCK,
     CB_ADMIN_USER_UNBLOCK,
+    CB_DEVICE_ANDROID,
+    CB_DEVICE_IPHONE,
     CB_DOWNLOAD,
     CB_INCIDENT_LIST,
     CB_INCIDENT_STATUS,
     CB_INCIDENT_VIEW,
+    CB_REENCODE,
     CB_SPLIT_NO,
     CB_SPLIT_YES,
     CB_TICKET_CLOSE,
@@ -317,6 +320,22 @@ def build_restart_confirm() -> types.InlineKeyboardMarkup:
 # --- Клавиатуры инцидентов воспроизведения видео ---
 
 
+def build_device_selection() -> types.InlineKeyboardMarkup:
+    """Строит клавиатуру выбора типа устройства."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.row(
+        types.InlineKeyboardButton(
+            text="\U0001f4f1 Android",
+            callback_data=CB_DEVICE_ANDROID,
+        ),
+        types.InlineKeyboardButton(
+            text="\U0001f34f iPhone / iPad",
+            callback_data=CB_DEVICE_IPHONE,
+        ),
+    )
+    return markup
+
+
 def build_video_report_button(token: str) -> types.InlineKeyboardMarkup:
     """Строит кнопку «Не воспроизводится» под отправленным видео."""
     markup = types.InlineKeyboardMarkup()
@@ -325,6 +344,28 @@ def build_video_report_button(token: str) -> types.InlineKeyboardMarkup:
             text=f"{EMOJI_WARNING} Не воспроизводится",
             callback_data=_safe_callback_data(f"{CB_VIDEO_REPORT}|{token}"),
         )
+    )
+    return markup
+
+
+def build_video_buttons(
+    report_token: str,
+    reencode_token: str | None = None,
+) -> types.InlineKeyboardMarkup:
+    """Строит кнопки под видео: отчёт + опционально перекодирование."""
+    markup = types.InlineKeyboardMarkup()
+    if reencode_token:
+        markup.row(
+            types.InlineKeyboardButton(
+                text="\U0001f504 Перекодировать (iPhone)",
+                callback_data=_safe_callback_data(f"{CB_REENCODE}|{reencode_token}"),
+            ),
+        )
+    markup.row(
+        types.InlineKeyboardButton(
+            text=f"{EMOJI_WARNING} Не воспроизводится",
+            callback_data=_safe_callback_data(f"{CB_VIDEO_REPORT}|{report_token}"),
+        ),
     )
     return markup
 
