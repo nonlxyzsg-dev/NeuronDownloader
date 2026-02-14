@@ -24,10 +24,14 @@ from app.constants import (
     CB_ADMIN_USERS_PAGE,
     CB_ADMIN_USER_BLOCK,
     CB_ADMIN_USER_UNBLOCK,
+    CB_CACHED_SEND,
+    CB_DEVICE_ANDROID,
+    CB_DEVICE_IPHONE,
     CB_DOWNLOAD,
     CB_INCIDENT_LIST,
     CB_INCIDENT_STATUS,
     CB_INCIDENT_VIEW,
+    CB_REENCODE,
     CB_SPLIT_NO,
     CB_SPLIT_YES,
     CB_TICKET_CLOSE,
@@ -39,6 +43,7 @@ from app.constants import (
     EMOJI_BACK,
     EMOJI_BEST,
     EMOJI_CHANNEL,
+    EMOJI_DONE,
     EMOJI_INCIDENT,
     EMOJI_LOGS,
     EMOJI_RESTART,
@@ -48,6 +53,7 @@ from app.constants import (
     EMOJI_USERS,
     EMOJI_VIDEO,
     EMOJI_WARNING,
+    EMOJI_ZAP,
     FORMAT_AUDIO,
     FORMAT_BEST,
     INCIDENT_FIXED,
@@ -72,17 +78,29 @@ def _safe_callback_data(data: str) -> str:
     return truncated
 
 
-def build_format_keyboard(token: str, options: list[FormatOption]) -> types.InlineKeyboardMarkup:
-    """Строит клавиатуру выбора качества в несколько столбцов."""
+def build_format_keyboard(
+    token: str,
+    options: list[FormatOption],
+    cached_format_ids: set[str] | None = None,
+    has_cached_best: bool = False,
+    has_cached_audio: bool = False,
+) -> types.InlineKeyboardMarkup:
+    """Строит клавиатуру выбора качества в несколько столбцов.
+
+    cached_format_ids — множество format_id, для которых есть кэш (мгновенная отправка).
+    """
+    cached = cached_format_ids or set()
     markup = types.InlineKeyboardMarkup(row_width=3)
 
     # Кнопки качества по 3 в ряд
     quality_buttons = []
     for option in options[:TELEGRAM_MAX_BUTTONS_PER_KEYBOARD - 2]:
         cb = _safe_callback_data(f"{CB_DOWNLOAD}|{token}|{option.format_id}")
+        is_cached = option.format_id in cached
+        icon = f"{EMOJI_ZAP}" if is_cached else f"{EMOJI_VIDEO}"
         quality_buttons.append(
             types.InlineKeyboardButton(
-                text=f"{EMOJI_VIDEO} {option.label}",
+                text=f"{icon} {option.label}",
                 callback_data=cb,
             )
         )
@@ -92,13 +110,15 @@ def build_format_keyboard(token: str, options: list[FormatOption]) -> types.Inli
         markup.row(*row)
 
     # Максимальное качество + Только звук в одном ряду
+    best_icon = f"{EMOJI_ZAP}" if has_cached_best else f"{EMOJI_BEST}"
+    audio_icon = f"{EMOJI_ZAP}" if has_cached_audio else f"{EMOJI_AUDIO}"
     markup.row(
         types.InlineKeyboardButton(
-            text=f"{EMOJI_BEST} \u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435",
+            text=f"{best_icon} \u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435",
             callback_data=_safe_callback_data(f"{CB_DOWNLOAD}|{token}|{FORMAT_BEST}"),
         ),
         types.InlineKeyboardButton(
-            text=f"{EMOJI_AUDIO} \u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a",
+            text=f"{audio_icon} \u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a",
             callback_data=_safe_callback_data(f"{CB_DOWNLOAD}|{token}|{FORMAT_AUDIO}"),
         ),
     )
@@ -317,6 +337,22 @@ def build_restart_confirm() -> types.InlineKeyboardMarkup:
 # --- Клавиатуры инцидентов воспроизведения видео ---
 
 
+def build_device_selection() -> types.InlineKeyboardMarkup:
+    """Строит клавиатуру выбора типа устройства."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.row(
+        types.InlineKeyboardButton(
+            text="\U0001f4f1 Android",
+            callback_data=CB_DEVICE_ANDROID,
+        ),
+        types.InlineKeyboardButton(
+            text="\U0001f34f iPhone / iPad",
+            callback_data=CB_DEVICE_IPHONE,
+        ),
+    )
+    return markup
+
+
 def build_video_report_button(token: str) -> types.InlineKeyboardMarkup:
     """Строит кнопку «Не воспроизводится» под отправленным видео."""
     markup = types.InlineKeyboardMarkup()
@@ -325,6 +361,28 @@ def build_video_report_button(token: str) -> types.InlineKeyboardMarkup:
             text=f"{EMOJI_WARNING} Не воспроизводится",
             callback_data=_safe_callback_data(f"{CB_VIDEO_REPORT}|{token}"),
         )
+    )
+    return markup
+
+
+def build_video_buttons(
+    report_token: str,
+    reencode_token: str | None = None,
+) -> types.InlineKeyboardMarkup:
+    """Строит кнопки под видео: отчёт + опционально перекодирование."""
+    markup = types.InlineKeyboardMarkup()
+    if reencode_token:
+        markup.row(
+            types.InlineKeyboardButton(
+                text="\U0001f504 Перекодировать (iPhone)",
+                callback_data=_safe_callback_data(f"{CB_REENCODE}|{reencode_token}"),
+            ),
+        )
+    markup.row(
+        types.InlineKeyboardButton(
+            text=f"{EMOJI_WARNING} Не воспроизводится",
+            callback_data=_safe_callback_data(f"{CB_VIDEO_REPORT}|{report_token}"),
+        ),
     )
     return markup
 
