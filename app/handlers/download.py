@@ -411,26 +411,17 @@ def register_download_handlers(ctx) -> None:
                         original_codec or "неизвестен",
                         user_device or "не указано", force_reencode, url,
                     )
-                    # Определяем, нужна ли перекодировка
+                    # Перекодировка ТОЛЬКО если пользователь явно включил тогл
                     codec_ok = original_codec == "h264" if original_codec else True
-                    should_reencode = force_reencode or (
-                        not codec_ok and user_device != DEVICE_ANDROID
-                    )
-                    if should_reencode and not codec_ok:
+                    if force_reencode and not codec_ok:
                         size_mb = (total_bytes or 0) / (1024 * 1024)
                         est_minutes = max(1, int(size_mb * 0.6))
-                        reencode_reason = (
-                            "\u043f\u043e \u0432\u0430\u0448\u0435\u043c\u0443 \u0437\u0430\u043f\u0440\u043e\u0441\u0443"
-                            if force_reencode
-                            else "\u0434\u043b\u044f iPhone"
-                        )
                         if progress_message_id:
                             try:
                                 bot.edit_message_text(
-                                    f"\U0001f504 \u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u0443\u0435\u043c \u0432\u0438\u0434\u0435\u043e \u0432 H.264 "
-                                    f"({reencode_reason}, "
-                                    f"\u043a\u043e\u0434\u0435\u043a {original_codec} \u2192 H.264)...\n"
-                                    f"\u23f3 \u042d\u0442\u043e \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c ~{est_minutes} \u043c\u0438\u043d.",
+                                    f"\U0001f504 Перекодируем видео в H.264 "
+                                    f"(кодек {original_codec} \u2192 H.264)...\n"
+                                    f"\u23f3 Это может занять ~{est_minutes} мин.",
                                     chat_id, progress_message_id,
                                 )
                             except Exception:
@@ -441,16 +432,16 @@ def register_download_handlers(ctx) -> None:
                             reencode_duration = time.monotonic() - reencode_start
                             total_bytes = get_file_size(file_path)
                             logging.info(
-                                "\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0432 H.264 \u0437\u0430 %.2fs (\u043d\u043e\u0432\u044b\u0439 \u0440\u0430\u0437\u043c\u0435\u0440=%s, \u043f\u0443\u0442\u044c=%s)",
+                                "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
                                 reencode_duration,
-                                format_bytes(total_bytes) if total_bytes else "\u043d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e",
+                                format_bytes(total_bytes) if total_bytes else "неизвестно",
                                 file_path,
                             )
-                    elif not codec_ok and not force_reencode:
-                        # Android без force_reencode — пропускаем, пометим для кнопки
+                    elif not codec_ok:
+                        # Кодек несовместимый, но тогл выключен — показываем кнопку
                         needs_reencode = True
                         logging.info(
-                            "\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u043a\u0430 \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u0430 (Android): \u043a\u043e\u0434\u0435\u043a=%s, url=%s",
+                            "Перекодировка пропущена (тогл выкл): кодек=%s, url=%s",
                             original_codec, url,
                         )
 
