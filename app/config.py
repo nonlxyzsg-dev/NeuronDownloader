@@ -52,7 +52,7 @@ SUPPORTED_YOUTUBE_PLAYER_CLIENTS = [
     "mweb",
     "tv",
     "tv_simply",
-    "tv_embedded",
+    "tv_downgraded",
 ]
 YOUTUBE_PLAYER_CLIENTS = [
     value.strip()
