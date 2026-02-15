@@ -21,7 +21,10 @@ MEMBERSHIP_CACHE_TTL = 300  # 5 минут
 PREFERRED_VIDEO_FORMAT = "mp4"
 
 # --- Подпись бота для подписей к медиа ---
-BOT_SIGNATURE = "\u0421\u043a\u0430\u0447\u0430\u043b \u0434\u043b\u044f \u0412\u0430\u0441 @NeuronDownloader_Bot"
+BOT_SIGNATURE = (
+    "Скачал для Вас @NeuronDownloader_Bot\n"
+    '<a href="https://t.me/Windows_VPN_bot?start=JaxTesla">Помощь с доступом к нейросетям</a>'
+)
 
 # --- Префиксы callback-данных ---
 CB_DOWNLOAD = "dl"
