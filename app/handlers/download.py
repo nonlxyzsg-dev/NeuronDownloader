@@ -117,6 +117,7 @@ def register_download_handlers(ctx) -> None:
                 user_id,
                 source,
                 caption=caption,
+                parse_mode="HTML",
                 timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
             )
         else:
@@ -125,6 +126,7 @@ def register_download_handlers(ctx) -> None:
                 user_id,
                 source,
                 caption=caption,
+                parse_mode="HTML",
                 timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
                 supports_streaming=True,
                 reply_markup=reply_markup,

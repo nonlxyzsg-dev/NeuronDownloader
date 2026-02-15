@@ -1,5 +1,6 @@
 """Общие утилиты: форматирование, URL-помощники, кэширование, повторные попытки."""
 
+import html
 import logging
 import os
 import time
@@ -43,9 +44,9 @@ def append_youtube_client_hint(message: str) -> str:
 
 
 def format_caption(title: str, video_tag: str = "") -> str:
-    """Формирует подпись к медиафайлу с заголовком и подписью бота."""
-    title = title.strip()
-    tag_line = f"\n{video_tag}" if video_tag else ""
+    """Формирует подпись к медиафайлу с заголовком и подписью бота (HTML)."""
+    title = html.escape(title.strip())
+    tag_line = f"\n{html.escape(video_tag)}" if video_tag else ""
     if title:
         caption = f"{title}\n\n{BOT_SIGNATURE}{tag_line}"
     else:
