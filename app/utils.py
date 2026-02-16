@@ -9,6 +9,7 @@ import threading
 
 from app.constants import (
     BOT_SIGNATURE,
+    CHANNEL_LINK,
     EMOJI_ALERT,
     MEMBERSHIP_CACHE_TTL,
     TELEGRAM_CAPTION_MAX_LENGTH,
@@ -95,9 +96,10 @@ def format_limit_message(free_limit: int | None = None, window_seconds: int | No
     else:
         period = f"{window} \u0441\u0435\u043a\u0443\u043d\u0434"
     return (
-        f"\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u043e {limit} \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435(\u044f) \u0437\u0430 {period}.\n"
-        "\u042d\u0442\u043e\u0442 \u0441\u0435\u0440\u0432\u0438\u0441 \u2014 \u0431\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u044c \u043f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u0430\u043c \u043a\u0430\u043d\u0430\u043b\u0430 \u00ab\u0411\u0430\u043d\u043a\u0430 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438\u00bb. "
-        "\u041f\u043e\u0434\u043f\u0438\u0448\u0438\u0442\u0435\u0441\u044c, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0431\u0435\u0437\u043b\u0438\u043c\u0438\u0442\u043d\u044b\u0435 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438!"
+        f"Доступно {limit} скачивание(я) за {period}.\n"
+        'Этот сервис — благодарность подписчикам '
+        f'<a href="{CHANNEL_LINK}">канала «Банка с нейронами»</a>. '
+        f'<a href="{CHANNEL_LINK}">Подпишитесь</a>, чтобы получить безлимитные загрузки!'
     )
 
 
