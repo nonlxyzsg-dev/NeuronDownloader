@@ -1,5 +1,6 @@
 """Обработчики скачивания: приём URL, выбор качества, задача загрузки."""
 
+import html as html_mod
 import logging
 import os
 import queue
@@ -37,7 +38,9 @@ from app.constants import (
     EMOJI_ZAP,
     FORMAT_AUDIO,
     FORMAT_BEST,
+    CHANNEL_LINK,
     MENU_ADMIN,
+    MENU_CHANNEL,
     STATUS_FAILED,
     STATUS_SUCCESS,
     TELEGRAM_MAX_FILE_SIZE,
@@ -615,25 +618,26 @@ def register_download_handlers(ctx) -> None:
         bot.send_message(
             message.chat.id,
             (
-                "\U0001f4be \u041f\u0440\u0438\u0432\u0435\u0442! \u042f \u2014 \u041d\u0435\u0439\u0440\u043e\u043d-Downloader, "
-                "\u0447\u0430\u0441\u0442\u044c \u044d\u043a\u043e\u0441\u0438\u0441\u0442\u0435\u043c\u044b "
-                "\u00ab\u0411\u0430\u043d\u043a\u0438 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438\u00bb \U0001f9e0\n\n"
-                "\u041c\u043e\u044f \u0440\u0430\u0431\u043e\u0442\u0430 \u2014 \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u0442\u044c \u0432\u0438\u0434\u0435\u043e. "
-                "YouTube, VK \u0412\u0438\u0434\u0435\u043e, Rutube, Instagram, TikTok \u2014 "
-                "\u043f\u0440\u043e\u0441\u0442\u043e \u043a\u0438\u0434\u0430\u0439\u0442\u0435 \u0441\u0441\u044b\u043b\u043a\u0443.\n\n"
-                "\u0411\u043e\u0442 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0434\u043b\u044f \u0432\u0441\u0435\u0445, "
-                "\u043d\u043e \u0443 \u043f\u043e\u0434\u043f\u0438\u0441\u0447\u0438\u043a\u043e\u0432 \u043a\u0430\u043d\u0430\u043b\u0430 "
-                "\u043d\u0435\u0442 \u043d\u0438\u043a\u0430\u043a\u0438\u0445 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0439 \u2014 "
-                "\u044d\u0442\u043e \u043d\u0430\u0448\u0435 \u0441\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443, "
-                "\u0440\u0435\u0430\u043a\u0446\u0438\u0438, \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438 \u0438 \u0433\u043e\u043b\u043e\u0441\u0430. "
-                "\u0412\u044b \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0435 \u043a\u0430\u043d\u0430\u043b \u2014 "
-                "\u043d\u0435\u0439\u0440\u043e\u043d\u044b \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044e\u0442 \u0432\u0430\u0441.\n\n"
-                "\u041f\u043e\u043a\u0430 \u043d\u0435 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u044b? "
-                "\u041f\u0440\u0438\u0441\u043e\u0435\u0434\u0438\u043d\u044f\u0439\u0442\u0435\u0441\u044c \u2014 "
-                "\u0438 \u043b\u0438\u043c\u0438\u0442\u044b \u0438\u0441\u0447\u0435\u0437\u043d\u0443\u0442.\n\n"
-                "\U0001f4dd \u0421\u043e\u043e\u0431\u0449\u0438\u0442\u044c \u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0435 \u2014 "
-                "\u0435\u0441\u043b\u0438 \u0447\u0442\u043e-\u0442\u043e \u043f\u043e\u0448\u043b\u043e \u043d\u0435 \u0442\u0430\u043a."
+                "\U0001f4be Привет! Я — Нейрон-Downloader, "
+                "часть экосистемы "
+                f'<a href="{CHANNEL_LINK}">«Банки с нейронами»</a> \U0001f9e0\n\n'
+                "Моя работа — скачивать видео. "
+                "YouTube, VK Видео, Rutube, Instagram, TikTok — "
+                "просто кидайте ссылку.\n\n"
+                "Бот работает для всех, "
+                f'но у подписчиков <a href="{CHANNEL_LINK}">канала</a> '
+                "нет никаких ограничений — "
+                "это наше спасибо за подписку, "
+                "реакции, комментарии и голоса. "
+                "Вы поддерживаете канал — "
+                "нейроны поддерживают вас.\n\n"
+                "Пока не подписаны? "
+                f'<a href="{CHANNEL_LINK}">Присоединяйтесь</a> — '
+                "и лимиты исчезнут.\n\n"
+                "\U0001f4dd Сообщить о проблеме — "
+                "если что-то пошло не так."
             ),
+            parse_mode="HTML",
             reply_markup=build_main_menu(is_admin=user_is_admin),
         )
         # Спрашиваем тип устройства, если ещё не указан
@@ -681,7 +685,7 @@ def register_download_handlers(ctx) -> None:
                         text,
                         call.message.chat.id,
                         call.message.message_id,
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                         reply_markup=markup,
                     )
                 except Exception:
@@ -725,6 +729,29 @@ def register_download_handlers(ctx) -> None:
             reply_markup=build_device_selection(),
         )
 
+    @bot.message_handler(func=lambda msg: msg.text == MENU_CHANNEL)
+    def handle_channel_button(message: types.Message) -> None:
+        """Обработчик кнопки «Банка с нейронами» — отправляет инлайн-кнопку со ссылкой на канал."""
+        ctx.ensure_user(message.from_user)
+        if not ctx.check_access(message.from_user.id, message.chat.id):
+            return
+        ctx.clear_last_inline(message.from_user.id, message.chat.id)
+        markup = types.InlineKeyboardMarkup()
+        markup.row(
+            types.InlineKeyboardButton(
+                text="\U0001f4e2 Перейти в канал",
+                url=CHANNEL_LINK,
+            )
+        )
+        bot.send_message(
+            message.chat.id,
+            'Канал <a href="' + CHANNEL_LINK + '">«Банка с нейронами»</a> — '
+            "здесь рассказываем про ИИ-технологии простым языком.\n\n"
+            "Подписчики получают безлимитные загрузки!",
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+
     @bot.message_handler(func=lambda msg: msg.text == MENU_ADMIN and is_admin(msg.from_user.id))
     def handle_admin_button(message: types.Message) -> None:
         """Обработчик кнопки «Админ-панель» из reply-меню."""
@@ -765,6 +792,7 @@ def register_download_handlers(ctx) -> None:
             bot.send_message(
                 message.chat.id,
                 format_limit_message(free_limit, free_window),
+                parse_mode="HTML",
                 reply_markup=channel_markup,
             )
             return
@@ -880,19 +908,19 @@ def register_download_handlers(ctx) -> None:
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
         reencode_hint = (
-            "\n\n\U0001f534 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0441\u0435\u0439\u0447\u0430\u0441 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
-            "\u0415\u0441\u043b\u0438 \u0432\u0438\u0434\u0435\u043e \u043d\u0435 \u0432\u043e\u0441\u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u043d\u0430 iPhone \u2014 "
-            "\u0432\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u043d\u0438\u0436\u0435."
+            "\n\n\U0001f534 <b>Перекодирование H.264 сейчас выключено.</b>\n"
+            "Если видео не воспроизводится на iPhone — "
+            "включите кнопкой ниже."
         )
         sent = bot.send_message(
             message.chat.id,
             (
-                f"{note}**\u041d\u0430\u0448\u043b\u0438 \u0432\u0438\u0434\u0435\u043e:** {title}\n"
-                "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u043d\u0438\u0436\u0435 \u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 *\u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435* / *\u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a*."
+                f"{note}<b>Нашли видео:</b> {html_mod.escape(title)}\n"
+                "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
                 f"{cache_hint}"
                 f"{reencode_hint}"
             ),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=markup,
         )
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
@@ -991,19 +1019,19 @@ def register_download_handlers(ctx) -> None:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
         if reencode_on:
             reencode_hint = (
-                "\n\n\U0001f7e2 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0432\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
-                "\u0412\u0438\u0434\u0435\u043e \u0431\u0443\u0434\u0435\u0442 \u043f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0432 H.264 \u043f\u043e\u0441\u043b\u0435 \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u044f "
-                "(\u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c 1\u20143 \u043c\u0438\u043d.)."
+                "\n\n\U0001f7e2 <b>Перекодирование H.264 включено.</b>\n"
+                "Видео будет перекодировано в H.264 после скачивания "
+                "(может занять 1\u20143 мин.)."
             )
         else:
             reencode_hint = (
-                "\n\n\U0001f534 *\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264 \u0441\u0435\u0439\u0447\u0430\u0441 \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043e.*\n"
-                "\u0415\u0441\u043b\u0438 \u0432\u0438\u0434\u0435\u043e \u043d\u0435 \u0432\u043e\u0441\u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u043d\u0430 iPhone \u2014 "
-                "\u0432\u043a\u043b\u044e\u0447\u0438\u0442\u0435 \u043a\u043d\u043e\u043f\u043a\u043e\u0439 \u043d\u0438\u0436\u0435."
+                "\n\n\U0001f534 <b>Перекодирование H.264 сейчас выключено.</b>\n"
+                "Если видео не воспроизводится на iPhone — "
+                "включите кнопкой ниже."
             )
         text = (
-            f"{note}**\u041d\u0430\u0448\u043b\u0438 \u0432\u0438\u0434\u0435\u043e:** {rctx['title']}\n"
-            "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u043d\u0438\u0436\u0435 \u0438\u043b\u0438 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 *\u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435* / *\u0422\u043e\u043b\u044c\u043a\u043e \u0437\u0432\u0443\u043a*."
+            f"{note}<b>Нашли видео:</b> {html_mod.escape(rctx['title'])}\n"
+            "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
             f"{cache_hint}"
             f"{reencode_hint}"
         )
@@ -1029,7 +1057,7 @@ def register_download_handlers(ctx) -> None:
                     text,
                     call.message.chat.id,
                     call.message.message_id,
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                     reply_markup=markup,
                 )
             except Exception:

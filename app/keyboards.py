@@ -63,6 +63,7 @@ from app.constants import (
     INCIDENT_REPORTED,
     INCIDENT_WONT_FIX,
     MENU_ADMIN,
+    MENU_CHANNEL,
     MENU_REPORT,
     TELEGRAM_CALLBACK_DATA_MAX_BYTES,
     TELEGRAM_MAX_BUTTONS_PER_KEYBOARD,
@@ -156,6 +157,7 @@ def build_format_keyboard(
 def build_main_menu(is_admin: bool = False) -> types.ReplyKeyboardMarkup:
     """Строит главное reply-меню бота."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row(MENU_CHANNEL)
     if is_admin:
         markup.row(MENU_REPORT, MENU_ADMIN)
     else:
