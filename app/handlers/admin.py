@@ -10,6 +10,7 @@ from telebot import types
 from app.config import ADMIN_IDS, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS
 from app.constants import (
     CB_ADMIN,
+    CB_ADMIN_BROADCAST,
     CB_ADMIN_INCIDENTS,
     CB_ADMIN_STATS,
     CB_ADMIN_STATS_PLATFORM,
@@ -29,6 +30,8 @@ from app.constants import (
     CB_ADMIN_SET_WINDOW,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
+    CB_BROADCAST_AFFECTED,
+    CB_BROADCAST_ALL,
     CB_INCIDENT_LIST,
     CB_INCIDENT_STATUS,
     CB_INCIDENT_VIEW,
@@ -41,6 +44,8 @@ from app.constants import (
     EMOJI_DONE,
     INCIDENT_FIXED,
     INCIDENT_WONT_FIX,
+    STATE_AWAITING_BROADCAST_AFFECTED,
+    STATE_AWAITING_BROADCAST_ALL,
     STATE_AWAITING_LIMIT,
     STATE_AWAITING_WINDOW,
     STATE_AWAITING_CHANNEL_ID,
@@ -56,6 +61,7 @@ from app.keyboards import (
     build_admin_settings,
     build_admin_channels,
     build_admin_tickets,
+    build_broadcast_menu,
     build_incident_actions,
     build_ticket_actions,
     build_restart_confirm,
@@ -917,6 +923,108 @@ def register_admin_handlers(ctx) -> None:
             text = "\n".join(lines)
             markup = build_incident_actions(incident_id, status)
             _safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=markup)
+
+    # ==================================================================
+    # МАССОВАЯ РАССЫЛКА
+    # ==================================================================
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_BROADCAST)
+    def cb_admin_broadcast(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        total = len(storage.list_all_user_ids())
+        affected = len(storage.list_affected_user_ids())
+        markup = build_broadcast_menu(total, affected)
+        _safe_edit(
+            call.message.chat.id, call.message.message_id,
+            "📢 Рассылка сообщений\n\nВыберите аудиторию:",
+            reply_markup=markup,
+        )
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_BROADCAST_ALL)
+    def cb_broadcast_all(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        ctx.set_user_state(user_id, STATE_AWAITING_BROADCAST_ALL)
+        bot.send_message(
+            call.message.chat.id,
+            "📢 Введите текст рассылки для ВСЕХ пользователей.\n\n"
+            "Отправьте /cancel для отмены.",
+        )
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_BROADCAST_AFFECTED)
+    def cb_broadcast_affected(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        affected = len(storage.list_affected_user_ids())
+        if affected == 0:
+            bot.send_message(
+                call.message.chat.id,
+                "Нет пользователей с открытыми обращениями или инцидентами.",
+            )
+            return
+        ctx.set_user_state(user_id, STATE_AWAITING_BROADCAST_AFFECTED)
+        bot.send_message(
+            call.message.chat.id,
+            f"🎯 Введите текст рассылки для затронутых пользователей ({affected} чел.).\n\n"
+            "Отправьте /cancel для отмены.",
+        )
+
+    @bot.message_handler(func=lambda m: (
+        m.text is not None
+        and is_admin(m.from_user.id)
+        and ctx.get_user_state(m.from_user.id) in (
+            STATE_AWAITING_BROADCAST_ALL,
+            STATE_AWAITING_BROADCAST_AFFECTED,
+        )
+    ))
+    def handle_broadcast_text(message: types.Message):
+        user_id = message.from_user.id
+        state = ctx.get_user_state(user_id)
+        text = message.text.strip()
+
+        if text == "/cancel":
+            ctx.set_user_state(user_id, None)
+            bot.send_message(message.chat.id, "Рассылка отменена.")
+            return
+
+        if state == STATE_AWAITING_BROADCAST_ALL:
+            user_ids = storage.list_all_user_ids()
+            audience = "всем пользователям"
+        else:
+            user_ids = storage.list_affected_user_ids()
+            audience = "затронутым пользователям"
+
+        ctx.set_user_state(user_id, None)
+
+        if not user_ids:
+            bot.send_message(message.chat.id, "Список получателей пуст.")
+            return
+
+        sent = 0
+        failed = 0
+        for uid in user_ids:
+            try:
+                bot.send_message(uid, f"📢 {text}")
+                sent += 1
+            except Exception as exc:
+                logger.warning("Не удалось отправить рассылку пользователю %s: %s", uid, exc)
+                failed += 1
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ Рассылка {audience} завершена.\n"
+            f"Доставлено: {sent}\nОшибок: {failed}",
+        )
 
     # ==================================================================
     # 27. Обратный вызов "noop" -> пустой ответ

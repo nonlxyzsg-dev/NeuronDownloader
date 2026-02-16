@@ -71,6 +71,11 @@ CB_INCIDENT_VIEW = "inc_v"
 CB_INCIDENT_STATUS = "inc_ss"
 CB_INCIDENT_LIST = "inc_l"
 
+# Массовая рассылка
+CB_ADMIN_BROADCAST = "adm_bc"
+CB_BROADCAST_ALL = "bc_all"
+CB_BROADCAST_AFFECTED = "bc_aff"
+
 # Выбор устройства
 CB_DEVICE_ANDROID = "dev_a"
 CB_DEVICE_IPHONE = "dev_i"
@@ -147,3 +152,5 @@ STATE_AWAITING_WINDOW = "awaiting_window"
 STATE_AWAITING_CHANNEL_ID = "awaiting_channel_id"
 STATE_REPLYING_TICKET = "replying_ticket"
 STATE_AWAITING_LOG_LINES = "awaiting_log_lines"
+STATE_AWAITING_BROADCAST_ALL = "awaiting_broadcast_all"
+STATE_AWAITING_BROADCAST_AFFECTED = "awaiting_broadcast_affected"
