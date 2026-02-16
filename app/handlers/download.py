@@ -622,7 +622,9 @@ def register_download_handlers(ctx) -> None:
                 "часть экосистемы "
                 f'<a href="{CHANNEL_LINK}">«Банки с нейронами»</a> \U0001f9e0\n\n'
                 "Моя работа — скачивать видео. "
-                "YouTube, VK Видео, Rutube, Instagram, TikTok — "
+                "YouTube, VK Видео, Rutube, Instagram, TikTok, "
+                "X (Twitter), Facebook, Twitch, Dailymotion, Vimeo, "
+                "OK.ru, Pinterest, Reddit, Likee и другие — "
                 "просто кидайте ссылку.\n\n"
                 "Бот работает для всех, "
                 f'но у подписчиков <a href="{CHANNEL_LINK}">канала</a> '
@@ -779,7 +781,13 @@ def register_download_handlers(ctx) -> None:
         if not url.startswith("http"):
             bot.send_message(
                 message.chat.id,
-                "\u041f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, \u043e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0441\u0441\u044b\u043b\u043a\u0443 \u043d\u0430 \u0432\u0438\u0434\u0435\u043e (YouTube, Instagram, VK).",
+                "Пожалуйста, отправьте ссылку на видео.\n\n"
+                "Поддерживаемые платформы: "
+                "YouTube, VK Видео, Rutube, Instagram, TikTok, "
+                "X (Twitter), Facebook, Twitch, Dailymotion, Vimeo, "
+                "OK.ru, Pinterest, Reddit, Likee "
+                "и многие другие.",
+                reply_markup=build_main_menu(is_admin=is_admin(message.from_user.id)),
             )
             return
         ctx.clear_last_inline(message.from_user.id, message.chat.id)
