@@ -6,6 +6,7 @@ from telebot import types
 
 from app.constants import (
     CB_ADMIN_BACK,
+    CB_ADMIN_BROADCAST,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
     CB_ADMIN_INCIDENTS,
@@ -24,6 +25,8 @@ from app.constants import (
     CB_ADMIN_USERS_PAGE,
     CB_ADMIN_USER_BLOCK,
     CB_ADMIN_USER_UNBLOCK,
+    CB_BROADCAST_AFFECTED,
+    CB_BROADCAST_ALL,
     CB_CACHED_SEND,
     CB_DEVICE_ANDROID,
     CB_DEVICE_INLINE,
@@ -227,8 +230,27 @@ def build_admin_menu(open_tickets: int = 0, open_incidents: int = 0) -> types.In
         types.InlineKeyboardButton(text=f"{EMOJI_LOGS} Логи", callback_data=CB_ADMIN_LOGS),
     )
     markup.row(
+        types.InlineKeyboardButton(text="\U0001f4e2 Рассылка", callback_data=CB_ADMIN_BROADCAST),
         types.InlineKeyboardButton(text=f"{EMOJI_RESTART} Перезапуск бота", callback_data=CB_ADMIN_RESTART),
     )
+    return markup
+
+
+def build_broadcast_menu(total_users: int, affected_users: int) -> types.InlineKeyboardMarkup:
+    """Строит меню выбора типа рассылки."""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        text=f"\U0001f4e2 Всем пользователям ({total_users})",
+        callback_data=CB_BROADCAST_ALL,
+    ))
+    markup.add(types.InlineKeyboardButton(
+        text=f"\U0001f3af Затронутым (тикеты/инциденты) ({affected_users})",
+        callback_data=CB_BROADCAST_AFFECTED,
+    ))
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} \u041d\u0430\u0437\u0430\u0434",
+        callback_data=CB_ADMIN_BACK,
+    ))
     return markup
 
 

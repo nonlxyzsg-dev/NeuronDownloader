@@ -572,6 +572,26 @@ class Storage:
                     (status, incident_id),
                 )
 
+    def list_all_user_ids(self) -> list[int]:
+        """Возвращает список ID всех незаблокированных пользователей."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT user_id FROM users WHERE blocked = 0"
+            )
+            return [row[0] for row in cur.fetchall()]
+
+    def list_affected_user_ids(self) -> list[int]:
+        """Возвращает список ID пользователей с открытыми тикетами или инцидентами."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT DISTINCT user_id FROM ("
+                "  SELECT user_id FROM support_tickets WHERE status = 'open'"
+                "  UNION"
+                "  SELECT user_id FROM video_incidents WHERE status IN ('reported', 'in_progress')"
+                ")"
+            )
+            return [row[0] for row in cur.fetchall()]
+
     def count_open_incidents(self) -> int:
         """Возвращает количество открытых инцидентов (reported + in_progress)."""
         with self._connect() as conn:
