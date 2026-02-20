@@ -9,7 +9,7 @@ import threading
 
 from datetime import datetime, timezone
 
-from telebot import TeleBot, types
+from telebot import TeleBot, apihelper, types
 
 from app.config import (
     ADMIN_IDS,
@@ -21,6 +21,7 @@ from app.config import (
     MAX_QUEUE_SIZE,
     MAX_ACTIVE_TASKS_PER_USER,
     REQUIRED_CHAT_IDS,
+    TELEGRAM_API_SERVER_URL,
     TELEGRAM_POLLING_ERROR_DELAY_SECONDS,
     TELEGRAM_POLLING_DNS_DELAY_SECONDS,
 )
@@ -235,6 +236,16 @@ def main() -> None:
     setup_logging()
     os.makedirs(DATA_DIR, exist_ok=True)
     logging.info("Бот запускается...")
+
+    # Настройка локального Telegram Bot API Server (если указан)
+    if TELEGRAM_API_SERVER_URL:
+        base = TELEGRAM_API_SERVER_URL.rstrip("/")
+        apihelper.API_URL = f"{base}/bot{{0}}/{{1}}"
+        apihelper.FILE_URL = f"{base}/file/bot{{0}}/{{1}}"
+        logging.info(
+            "Используется локальный Telegram Bot API Server: %s (лимит 2000 МБ)",
+            base,
+        )
 
     bot = TeleBot(BOT_TOKEN)
     storage = Storage()

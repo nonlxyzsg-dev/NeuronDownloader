@@ -3,6 +3,10 @@
 # --- Лимиты Telegram ---
 TELEGRAM_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 МБ — лимит загрузки через бот
 TELEGRAM_SPLIT_TARGET_SIZE = 45 * 1024 * 1024  # 45 МБ — целевой размер частей при разделении
+
+# --- Лимиты локального Telegram Bot API Server ---
+TELEGRAM_LOCAL_API_MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2000 МБ — лимит через локальный Bot API
+TELEGRAM_LOCAL_API_SPLIT_TARGET_SIZE = 1900 * 1024 * 1024  # 1900 МБ — целевой размер частей
 TELEGRAM_CAPTION_MAX_LENGTH = 1024
 TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64
 TELEGRAM_MAX_BUTTONS_PER_KEYBOARD = 100
