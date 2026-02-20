@@ -13,6 +13,7 @@ from telebot import types
 
 from app.config import (
     ENABLE_REACTIONS,
+    TELEGRAM_API_SERVER_URL,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
 )
 from app.constants import (
@@ -43,6 +44,8 @@ from app.constants import (
     MENU_CHANNEL,
     STATUS_FAILED,
     STATUS_SUCCESS,
+    TELEGRAM_LOCAL_API_MAX_FILE_SIZE,
+    TELEGRAM_LOCAL_API_SPLIT_TARGET_SIZE,
     TELEGRAM_MAX_FILE_SIZE,
     TELEGRAM_SPLIT_TARGET_SIZE,
 )
@@ -77,6 +80,11 @@ def register_download_handlers(ctx) -> None:
     downloader = ctx.downloader
     download_manager = ctx.download_manager
     active_downloads = ctx.active_downloads
+
+    # Эффективные лимиты: локальный Bot API Server (2000 МБ) или стандартный (50 МБ)
+    use_local_api = bool(TELEGRAM_API_SERVER_URL)
+    max_file_size = TELEGRAM_LOCAL_API_MAX_FILE_SIZE if use_local_api else TELEGRAM_MAX_FILE_SIZE
+    split_target_size = TELEGRAM_LOCAL_API_SPLIT_TARGET_SIZE if use_local_api else TELEGRAM_SPLIT_TARGET_SIZE
 
     # Временное хранилище: токен разделения -> информация о файле
     _split_pending: dict[str, dict] = {}
@@ -345,7 +353,7 @@ def register_download_handlers(ctx) -> None:
                 )
 
                 if direct_url:
-                    if direct_size and direct_size > TELEGRAM_MAX_FILE_SIZE:
+                    if direct_size and direct_size > max_file_size:
                         logging.info(
                             "Файл по прямой ссылке слишком большой (%s), переходим к скачиванию",
                             format_bytes(direct_size),
@@ -451,7 +459,7 @@ def register_download_handlers(ctx) -> None:
                         )
 
                 # Если файл слишком большой, предлагаем разделить
-                if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
+                if total_bytes and total_bytes > max_file_size:
                     split_token = uuid.uuid4().hex[:12]
                     _split_pending[split_token] = {
                         "file_path": file_path,
@@ -463,7 +471,7 @@ def register_download_handlers(ctx) -> None:
                     }
                     split_text = (
                         f"Файл слишком большой ({format_bytes(total_bytes)}). "
-                        f"Лимит Telegram \u2014 {format_bytes(TELEGRAM_MAX_FILE_SIZE)}.\n\n"
+                        f"Лимит Telegram \u2014 {format_bytes(max_file_size)}.\n\n"
                         "Хотите разделить видео на части и отправить?"
                     )
                     if progress_message_id:
@@ -1134,7 +1142,7 @@ def register_download_handlers(ctx) -> None:
                 )
             except Exception:
                 pass
-            parts = downloader.split_video(file_path, TELEGRAM_SPLIT_TARGET_SIZE)
+            parts = downloader.split_video(file_path, split_target_size)
             total_parts = len(parts)
             video_tag = f"#nd_{uuid.uuid4().hex[:6]}" if total_parts > 1 else ""
             for i, part_path in enumerate(parts, 1):
@@ -1329,7 +1337,7 @@ def register_download_handlers(ctx) -> None:
                     format_bytes(total_bytes) if total_bytes else "?",
                     re_url,
                 )
-                if total_bytes and total_bytes > TELEGRAM_MAX_FILE_SIZE:
+                if total_bytes and total_bytes > max_file_size:
                     try:
                         bot.edit_message_text(
                             f"{EMOJI_ERROR} Перекодированный файл слишком большой "

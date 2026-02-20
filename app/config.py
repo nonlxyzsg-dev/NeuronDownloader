@@ -73,3 +73,6 @@ ENABLE_REACTIONS = os.getenv("ENABLE_REACTIONS", "true").strip().lower() in (
     "yes",
     "on",
 )
+# URL локального Telegram Bot API Server (например, http://localhost:8081).
+# Если задан — используется локальный сервер с лимитом 2000 МБ вместо 50 МБ.
+TELEGRAM_API_SERVER_URL = os.getenv("TELEGRAM_API_SERVER_URL", "").strip()
