@@ -56,7 +56,6 @@ from app.keyboards import (
     build_format_keyboard,
     build_main_menu,
     build_split_confirm_keyboard,
-    build_video_buttons,
     build_video_report_button,
 )
 from app.downloader import _get_video_codec, ensure_h264
@@ -176,7 +175,6 @@ def register_download_handlers(ctx) -> None:
         status_message_id: int | None = None,
         audio_only: bool = False,
         reaction_message_id: int | None = None,
-        force_reencode: bool = False,
     ) -> None:
         def _job() -> None:
             if storage.is_blocked(user_id):
@@ -432,29 +430,23 @@ def register_download_handlers(ctx) -> None:
                     file_path, url,
                 )
 
-                # Проверяем кодек и решаем, нужна ли перекодировка
+                # Проверяем кодек — если не H.264, автоматически перекодируем
+                # (страховка: формат-строки уже приоритизируют H.264, но если
+                # платформа отдала VP9/AV1/HEVC — перекодируем молча).
                 original_codec = None
                 was_reencoded = False
-                needs_reencode = False
-                user_device = storage.get_user_device_type(user_id)
                 if not audio_only:
                     original_codec = _get_video_codec(file_path)
                     logging.info(
-                        "Кодек видео: %s (устройство=%s, force_reencode=%s, url=%s)",
-                        original_codec or "неизвестен",
-                        user_device or "не указано", force_reencode, url,
+                        "Кодек видео: %s (url=%s)",
+                        original_codec or "неизвестен", url,
                     )
-                    # Перекодировка ТОЛЬКО если пользователь явно включил тогл
                     codec_ok = original_codec == "h264" if original_codec else True
-                    if force_reencode and not codec_ok:
-                        size_mb = (total_bytes or 0) / (1024 * 1024)
-                        est_minutes = max(1, int(size_mb * 0.6))
+                    if not codec_ok:
                         if progress_message_id:
                             try:
                                 bot.edit_message_text(
-                                    f"\U0001f504 Перекодируем видео в H.264 "
-                                    f"(кодек {original_codec} \u2192 H.264)...\n"
-                                    f"\u23f3 Это может занять ~{est_minutes} мин.",
+                                    f"\U0001f504 Оптимизируем видео для воспроизведения\u2026",
                                     chat_id, progress_message_id,
                                 )
                             except Exception:
@@ -470,13 +462,6 @@ def register_download_handlers(ctx) -> None:
                                 format_bytes(total_bytes) if total_bytes else "неизвестно",
                                 file_path,
                             )
-                    elif not codec_ok:
-                        # Кодек несовместимый, но тогл выключен — показываем кнопку
-                        needs_reencode = True
-                        logging.info(
-                            "Перекодировка пропущена (тогл выкл): кодек=%s, url=%s",
-                            original_codec, url,
-                        )
 
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > max_file_size:
@@ -527,7 +512,7 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
 
-                # Кнопки под видео: отчёт + опционально перекодирование
+                # Кнопка «Не воспроизводится» под видео (для обратной связи)
                 report_markup = None
                 if not audio_only:
                     report_token = uuid.uuid4().hex[:12]
@@ -540,17 +525,7 @@ def register_download_handlers(ctx) -> None:
                         "resolution": str(info.get("height") or ""),
                         "file_size": total_bytes,
                     }
-                    reencode_token = None
-                    if needs_reencode:
-                        reencode_token = uuid.uuid4().hex[:12]
-                        _reencode_meta[reencode_token] = {
-                            "user_id": user_id,
-                            "url": url,
-                            "title": title,
-                            "selected_format": selected_format,
-                            "chat_id": chat_id,
-                        }
-                    report_markup = build_video_buttons(report_token, reencode_token)
+                    report_markup = build_video_report_button(report_token)
 
                 with open(file_path, "rb") as handle:
                     sent_file_id = _send_media(
@@ -921,31 +896,11 @@ def register_download_handlers(ctx) -> None:
                 cached_format_ids.add(fmt_id)
         any_cached = bool(cached_format_ids) or has_cached_best or has_cached_audio
 
-        # Устройство и тогл перекодирования
-        user_device = storage.get_user_device_type(message.from_user.id)
-        device_label = {"android": "Android", "iphone": "iPhone"}.get(
-            user_device or "", "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u043e",
-        )
-        _reencode_toggle[token] = False  # по умолчанию выключено
-
-        # Сохраняем контекст для перестроения клавиатуры при тогле
-        _request_context[token] = {
-            "url": url,
-            "title": title,
-            "options": options,
-            "cached_format_ids": cached_format_ids,
-            "has_cached_best": has_cached_best,
-            "has_cached_audio": has_cached_audio,
-            "subscribed": subscribed,
-        }
-
         markup = build_format_keyboard(
             token, options,
             cached_format_ids=cached_format_ids,
             has_cached_best=has_cached_best,
             has_cached_audio=has_cached_audio,
-            reencode_on=False,
-            device_label=device_label,
         )
         note = ""
         if not subscribed:
@@ -955,18 +910,12 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
-        reencode_hint = (
-            "\n\n\U0001f534 <b>Перекодирование H.264 сейчас выключено.</b>\n"
-            "Если видео не воспроизводится на iPhone — "
-            "включите кнопкой ниже."
-        )
         sent = bot.send_message(
             message.chat.id,
             (
                 f"{note}<b>Нашли видео:</b> {html_mod.escape(title)}\n"
                 "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
                 f"{cache_hint}"
-                f"{reencode_hint}"
             ),
             parse_mode="HTML",
             reply_markup=markup,
@@ -1010,7 +959,7 @@ def register_download_handlers(ctx) -> None:
         bot.answer_callback_query(call.id, "\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c.")
         selected_format = None if format_id in (FORMAT_BEST, FORMAT_AUDIO) else format_id
         audio_only = format_id == FORMAT_AUDIO
-        force_reencode = _reencode_toggle.pop(token, False)
+        _reencode_toggle.pop(token, None)
         _request_context.pop(token, None)
         queue_download(
             call.from_user.id,
@@ -1021,15 +970,11 @@ def register_download_handlers(ctx) -> None:
             status_message_id=call.message.message_id,
             audio_only=audio_only,
             reaction_message_id=reaction_message_id,
-            force_reencode=force_reencode,
         )
         storage.delete_request(token)
         try:
-            reencode_hint = ""
-            if force_reencode and not audio_only:
-                reencode_hint = " + \u043f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 H.264"
             bot.edit_message_text(
-                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438{reencode_hint}\u2026",
+                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438\u2026",
                 call.message.chat.id,
                 call.message.message_id,
             )
@@ -1044,17 +989,11 @@ def register_download_handlers(ctx) -> None:
         rctx = _request_context.get(token)
         if not rctx:
             return None
-        user_device = storage.get_user_device_type(user_id)
-        device_label = {"android": "Android", "iphone": "iPhone"}.get(
-            user_device or "", "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u043e",
-        )
         markup = build_format_keyboard(
             token, rctx["options"],
             cached_format_ids=rctx["cached_format_ids"],
             has_cached_best=rctx["has_cached_best"],
             has_cached_audio=rctx["has_cached_audio"],
-            reencode_on=reencode_on,
-            device_label=device_label,
         )
         any_cached = bool(rctx["cached_format_ids"]) or rctx["has_cached_best"] or rctx["has_cached_audio"]
         note = ""
@@ -1065,23 +1004,10 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
-        if reencode_on:
-            reencode_hint = (
-                "\n\n\U0001f7e2 <b>Перекодирование H.264 включено.</b>\n"
-                "Видео будет перекодировано в H.264 после скачивания "
-                "(может занять 1\u20143 мин.)."
-            )
-        else:
-            reencode_hint = (
-                "\n\n\U0001f534 <b>Перекодирование H.264 сейчас выключено.</b>\n"
-                "Если видео не воспроизводится на iPhone — "
-                "включите кнопкой ниже."
-            )
         text = (
             f"{note}<b>Нашли видео:</b> {html_mod.escape(rctx['title'])}\n"
             "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
             f"{cache_hint}"
-            f"{reencode_hint}"
         )
         return text, markup
 
