@@ -24,6 +24,30 @@ MEMBERSHIP_CACHE_TTL = 300  # 5 минут
 # --- Предпочтительный формат видео (избегаем проблем с webm в Telegram) ---
 PREFERRED_VIDEO_FORMAT = "mp4"
 
+# --- Экстракторы, для которых прямые ссылки не работают ---
+# YouTube, Instagram, TikTok и другие платформы защищают CDN-ссылки
+# (привязка к IP, подписи, cookies, короткий TTL), поэтому Telegram Bot API
+# не может скачать файл по прямому URL — всегда получим "failed to get HTTP URL content".
+DIRECT_URL_SKIP_EXTRACTORS = frozenset({
+    "Youtube",
+    "Instagram",
+    "TikTok",
+    "Twitter",
+    "Facebook",
+    "Vk",
+    "VKPlay",
+    "VKPlayLive",
+    "Twitch",
+    "TwitchStream",
+    "TwitchVod",
+    "BiliBili",
+    "Rutube",
+    "OK",
+    "Pikabu",
+    "Dzen",
+    "YandexDisk",
+})
+
 # --- Подпись бота для подписей к медиа ---
 BOT_SIGNATURE = (
     "Скачал для Вас @NeuronDownloader_Bot\n"

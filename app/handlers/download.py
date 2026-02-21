@@ -42,6 +42,7 @@ from app.constants import (
     CHANNEL_LINK,
     MENU_ADMIN,
     MENU_CHANNEL,
+    DIRECT_URL_SKIP_EXTRACTORS,
     STATUS_FAILED,
     STATUS_SUCCESS,
     TELEGRAM_LOCAL_API_MAX_FILE_SIZE,
@@ -351,6 +352,15 @@ def register_download_handlers(ctx) -> None:
                     "Загрузка начинается после %.2fs ожидания в очереди (user=%s, url=%s)",
                     queue_delay, user_id, url,
                 )
+
+                # Пропускаем прямые ссылки для платформ с защищённым CDN
+                extractor_key = (direct_info or {}).get("extractor_key", "")
+                if direct_url and extractor_key in DIRECT_URL_SKIP_EXTRACTORS:
+                    logging.info(
+                        "Прямая ссылка пропущена для %s — CDN защищён (user=%s, url=%s)",
+                        extractor_key, user_id, url,
+                    )
+                    direct_url = None
 
                 if direct_url:
                     if direct_size and direct_size > max_file_size:
