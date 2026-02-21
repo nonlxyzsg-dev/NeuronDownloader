@@ -237,14 +237,14 @@ class VideoDownloader:
         """Формирует базовые опции для yt-dlp."""
         output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
-            # Предпочитаем H.264 (AVC) видео + AAC аудио — универсально совместимо
-            # с Apple-устройствами. VP9/AV1 видео и Opus аудио в mp4-контейнере
-            # не декодируются на iOS/macOS в Telegram.
+            # Принудительно H.264 (AVC) видео + AAC аудио — работает на ВСЕХ
+            # устройствах без перекодирования (iPhone, Android, десктоп).
+            # VP9/AV1 не воспроизводятся в Telegram на iOS/macOS.
+            # Убраны фолбеки bestvideo+bestaudio (без фильтра кодека),
+            # чтобы никогда не скачивать VP9/AV1.
             "format": (
                 "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
                 "bestvideo[vcodec^=avc]+bestaudio/"
-                "bestvideo+bestaudio[acodec^=mp4a]/"
-                "bestvideo+bestaudio/"
                 "best"
             ),
             "quiet": True,
@@ -340,6 +340,14 @@ class VideoDownloader:
                         current_tbr,
                         is_h264,
                     )
+        # Показываем только разрешения, для которых есть H.264.
+        # Это гарантирует, что пользователь не сможет выбрать VP9/AV1-only
+        # формат (например, 1440p/4K на YouTube), который не воспроизводится
+        # на iPhone. Если H.264 нет вообще — показываем все (fallback).
+        h264_options = {k: v for k, v in options.items() if v[2]}
+        if h264_options:
+            options = h264_options
+
         sorted_options = sorted(
             (value[0] for value in options.values()),
             key=lambda opt: opt.height or 0,
@@ -379,10 +387,14 @@ class VideoDownloader:
                 }
             ]
         elif format_id:
-            # Предпочитаем AAC аудио — Opus в mp4 не воспроизводится на Apple
+            # Предпочитаем AAC аудио — Opus в mp4 не воспроизводится на Apple.
+            # Если запрошенный format_id окажется недоступен — фолбек на лучший
+            # H.264, чтобы никогда не скачать VP9/AV1 случайно.
             ydl_opts["format"] = (
                 f"{format_id}+bestaudio[acodec^=mp4a]/"
                 f"{format_id}+bestaudio/"
+                "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
+                "bestvideo[vcodec^=avc]+bestaudio/"
                 "best"
             )
         if progress_callback:
