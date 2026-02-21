@@ -41,6 +41,17 @@ class Storage:
             if "device_type" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN device_type TEXT")
 
+            # Расширение downloads для истории загрузок
+            dl_cols = {row[1] for row in conn.execute("PRAGMA table_info(downloads)").fetchall()}
+            if "url" not in dl_cols:
+                conn.execute("ALTER TABLE downloads ADD COLUMN url TEXT DEFAULT ''")
+            if "title" not in dl_cols:
+                conn.execute("ALTER TABLE downloads ADD COLUMN title TEXT DEFAULT ''")
+            if "telegram_file_id" not in dl_cols:
+                conn.execute("ALTER TABLE downloads ADD COLUMN telegram_file_id TEXT DEFAULT ''")
+            if "audio_only" not in dl_cols:
+                conn.execute("ALTER TABLE downloads ADD COLUMN audio_only INTEGER DEFAULT 0")
+
     def _init_db(self) -> None:
         """Создаёт все таблицы БД."""
         with sqlite3.connect(self.db_path) as conn:
@@ -295,12 +306,22 @@ class Storage:
 
     # --- Загрузки ---
 
-    def log_download(self, user_id: int, platform: str, status: str) -> None:
+    def log_download(
+        self,
+        user_id: int,
+        platform: str,
+        status: str,
+        url: str = "",
+        title: str = "",
+        telegram_file_id: str = "",
+        audio_only: bool = False,
+    ) -> None:
         """Записывает событие загрузки."""
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO downloads (user_id, platform, status) VALUES (?, ?, ?)",
-                (user_id, platform, status),
+                "INSERT INTO downloads (user_id, platform, status, url, title, telegram_file_id, audio_only) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, platform, status, url, title, telegram_file_id, audio_only),
             )
 
     def log_free_download(self, user_id: int, created_at: int) -> None:
@@ -382,6 +403,126 @@ class Storage:
                 "SELECT COUNT(*) FROM downloads WHERE created_at >= datetime('now', '-7 days')"
             )
             return cur.fetchone()[0]
+
+    # --- История загрузок ---
+
+    def get_download_history(
+        self,
+        user_id: int | None = None,
+        platform: str | None = None,
+        page: int = 0,
+        per_page: int = 8,
+    ) -> list[tuple]:
+        """Возвращает историю загрузок (id, user_id, platform, status, created_at, url, title, telegram_file_id, audio_only).
+
+        Фильтрация по user_id и/или platform. Отдаёт только успешные.
+        """
+        query = (
+            "SELECT id, user_id, platform, status, created_at, url, title, telegram_file_id, audio_only "
+            "FROM downloads WHERE status = 'success'"
+        )
+        params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if platform:
+            query += " AND platform = ?"
+            params.append(platform)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([per_page, page * per_page])
+        with self._connect() as conn:
+            return conn.execute(query, params).fetchall()
+
+    def count_download_history(
+        self,
+        user_id: int | None = None,
+        platform: str | None = None,
+    ) -> int:
+        """Считает успешные загрузки с опциональной фильтрацией."""
+        query = "SELECT COUNT(*) FROM downloads WHERE status = 'success'"
+        params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if platform:
+            query += " AND platform = ?"
+            params.append(platform)
+        with self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def get_download_platforms(self, user_id: int | None = None) -> list[tuple[str, int]]:
+        """Возвращает список платформ и количество загрузок: [(platform, count), ...]."""
+        query = (
+            "SELECT COALESCE(platform, 'unknown'), COUNT(*) FROM downloads "
+            "WHERE status = 'success'"
+        )
+        params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " GROUP BY platform ORDER BY COUNT(*) DESC"
+        with self._connect() as conn:
+            return conn.execute(query, params).fetchall()
+
+    def get_download_by_id(self, download_id: int) -> tuple | None:
+        """Возвращает загрузку по ID: (id, user_id, platform, status, created_at, url, title, telegram_file_id, audio_only)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT id, user_id, platform, status, created_at, url, title, telegram_file_id, audio_only "
+                "FROM downloads WHERE id = ?",
+                (download_id,),
+            )
+            return cur.fetchone()
+
+    def get_download_dates(
+        self,
+        user_id: int | None = None,
+        platform: str | None = None,
+    ) -> list[tuple[str, int]]:
+        """Возвращает даты загрузок с количествами: [(date_str, count), ...]."""
+        query = (
+            "SELECT DATE(created_at) as day, COUNT(*) FROM downloads "
+            "WHERE status = 'success'"
+        )
+        params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if platform:
+            query += " AND platform = ?"
+            params.append(platform)
+        query += " GROUP BY day ORDER BY day DESC"
+        with self._connect() as conn:
+            return conn.execute(query, params).fetchall()
+
+    def update_download_file_id(self, download_id: int, telegram_file_id: str) -> None:
+        """Обновляет telegram_file_id для записи загрузки (для отложенного кэширования)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE downloads SET telegram_file_id = ? WHERE id = ?",
+                (telegram_file_id, download_id),
+            )
+
+    def get_users_with_downloads(self, page: int = 0, per_page: int = 10) -> list[tuple[int, str, str, int]]:
+        """Возвращает пользователей с загрузками: [(user_id, username, first_name, download_count), ...]."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT u.user_id, u.username, u.first_name, COUNT(d.id) as cnt "
+                "FROM users u JOIN downloads d ON u.user_id = d.user_id "
+                "WHERE d.status = 'success' "
+                "GROUP BY u.user_id "
+                "ORDER BY cnt DESC "
+                "LIMIT ? OFFSET ?",
+                (per_page, page * per_page),
+            )
+            return cur.fetchall()
+
+    def count_users_with_downloads(self) -> int:
+        """Считает пользователей, у которых есть успешные загрузки."""
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM downloads WHERE status = 'success'"
+            ).fetchone()[0]
 
     # --- Тикеты поддержки ---
 

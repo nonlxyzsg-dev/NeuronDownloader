@@ -111,12 +111,13 @@ def register_download_handlers(ctx) -> None:
         file_size: int | None = None,
         video_tag: str = "",
         reply_markup=None,
+        source_url: str = "",
     ) -> str | None:
         """Отправляет аудио/видео пользователю с логикой повторных попыток.
 
         Возвращает telegram_file_id отправленного файла (для кэширования).
         """
-        caption = format_caption(title, video_tag=video_tag)
+        caption = format_caption(title, video_tag=video_tag, source_url=source_url)
         bot.send_chat_action(
             chat_id,
             ACTION_UPLOAD_AUDIO if audio_only else ACTION_UPLOAD_VIDEO,
@@ -302,14 +303,19 @@ def register_download_handlers(ctx) -> None:
                     try:
                         _send_media(
                             user_id, chat_id, cached_file_id, title,
-                            audio_only,
+                            audio_only, source_url=url,
                         )
                         if progress_message_id:
                             try:
                                 bot.delete_message(chat_id, progress_message_id)
                             except Exception:
                                 pass
-                        storage.log_download(user_id, "cache", STATUS_SUCCESS)
+                        storage.log_download(
+                            user_id, "cache", STATUS_SUCCESS,
+                            url=url, title=title,
+                            telegram_file_id=cached_file_id,
+                            audio_only=audio_only,
+                        )
                         return
                     except Exception:
                         logging.warning(
@@ -378,9 +384,10 @@ def register_download_handlers(ctx) -> None:
                             except Exception:
                                 pass
                         try:
-                            _send_media(
+                            sent_file_id_direct = _send_media(
                                 user_id, chat_id, direct_url, title,
                                 audio_only, file_size=direct_size,
+                                source_url=url,
                             )
                             if progress_message_id:
                                 try:
@@ -391,6 +398,9 @@ def register_download_handlers(ctx) -> None:
                                 user_id,
                                 (direct_info or {}).get("extractor_key", "unknown"),
                                 STATUS_SUCCESS,
+                                url=url, title=title,
+                                telegram_file_id=sent_file_id_direct or "",
+                                audio_only=audio_only,
                             )
                             return
                         except Exception:
@@ -478,6 +488,7 @@ def register_download_handlers(ctx) -> None:
                         "user_id": user_id,
                         "chat_id": chat_id,
                         "info": info,
+                        "url": url,
                     }
                     split_text = (
                         f"Файл слишком большой ({format_bytes(total_bytes)}). "
@@ -503,6 +514,7 @@ def register_download_handlers(ctx) -> None:
                         )
                     storage.log_download(
                         user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                        url=url, title=title, audio_only=audio_only,
                     )
                     return
 
@@ -545,6 +557,7 @@ def register_download_handlers(ctx) -> None:
                         user_id, chat_id, handle, title,
                         audio_only, file_size=total_bytes,
                         reply_markup=report_markup,
+                        source_url=url,
                     )
 
                 # Кэшируем file_id для мгновенной повторной отправки
@@ -581,10 +594,16 @@ def register_download_handlers(ctx) -> None:
                         pass
                 storage.log_download(
                     user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                    url=url, title=title,
+                    telegram_file_id=sent_file_id or "",
+                    audio_only=audio_only,
                 )
 
             except TimeoutError as exc:
-                storage.log_download(user_id, "unknown", STATUS_FAILED)
+                storage.log_download(
+                    user_id, "unknown", STATUS_FAILED,
+                    url=url, title=title, audio_only=audio_only,
+                )
                 notify_admin_error(bot, user_id, username, f"Таймаут загрузки: {url}", exc)
                 if progress_message_id:
                     try:
@@ -594,7 +613,10 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
             except Exception as exc:
-                storage.log_download(user_id, "unknown", STATUS_FAILED)
+                storage.log_download(
+                    user_id, "unknown", STATUS_FAILED,
+                    url=url, title=title, audio_only=audio_only,
+                )
                 notify_admin_error(bot, user_id, username, f"Ошибка загрузки: {url}", exc)
                 error_message = f"Ошибка загрузки: {exc}"
                 if is_youtube_url(url):
@@ -1142,6 +1164,7 @@ def register_download_handlers(ctx) -> None:
         audio_only = pending["audio_only"]
         user_id = pending["user_id"]
         chat_id = pending["chat_id"]
+        split_url = pending.get("url", "")
         msg_id = call.message.message_id
 
         def _split_job() -> None:
@@ -1164,6 +1187,7 @@ def register_download_handlers(ctx) -> None:
                             user_id, chat_id, handle, part_title,
                             audio_only, file_size=part_size,
                             video_tag=video_tag,
+                            source_url=split_url,
                         )
                 except Exception:
                     logging.exception("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0447\u0430\u0441\u0442\u044c %d/%d", i, total_parts)
@@ -1316,6 +1340,7 @@ def register_download_handlers(ctx) -> None:
                     _send_media(
                         re_user_id, re_chat_id, cached_fid,
                         f"{re_title} (H.264)", False,
+                        source_url=re_url,
                     )
                     try:
                         bot.delete_message(re_chat_id, progress_mid)
@@ -1373,6 +1398,7 @@ def register_download_handlers(ctx) -> None:
                         re_user_id, re_chat_id, handle,
                         f"{re_title} (H.264)", False,
                         file_size=total_bytes,
+                        source_url=re_url,
                     )
                 # Кэшируем перекодированную версию
                 if sent_fid:

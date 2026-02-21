@@ -111,6 +111,23 @@ CB_DEVICE_IPHONE = "dev_i"
 # Перекодирование по запросу
 CB_REENCODE = "reenc"
 
+# История загрузок — пользователь
+CB_MY_HISTORY = "mh"           # главное меню истории
+CB_MY_HIST_ALL = "mha"         # все загрузки (пагинация): mha|page
+CB_MY_HIST_PLATFORMS = "mhp"   # список площадок
+CB_MY_HIST_PLAT_VIEW = "mhpv"  # загрузки по площадке: mhpv|platform|page
+CB_MY_HIST_SEND = "mhs"        # отправить видео: mhs|download_id
+CB_MY_HIST_DATES = "mhd"       # тогл разбивки по датам
+
+# История загрузок — админ
+CB_ADMIN_HISTORY = "ahst"        # главное меню истории в админке
+CB_ADMIN_HIST_ALL = "aha"        # все загрузки: aha|page
+CB_ADMIN_HIST_PLATFORMS = "ahp"  # список площадок
+CB_ADMIN_HIST_PLAT_VIEW = "ahpv" # по площадке: ahpv|platform|page
+CB_ADMIN_HIST_USERS = "ahu"      # список пользователей: ahu|page
+CB_ADMIN_HIST_USER_VIEW = "ahuv" # загрузки пользователя: ahuv|user_id|page
+CB_ADMIN_HIST_SEND = "ahs"       # отправить видео админу: ahs|download_id
+
 # Тогл перекодирования в клавиатуре выбора качества
 CB_TOGGLE_REENCODE = "tgre"
 
@@ -151,6 +168,8 @@ EMOJI_CHANNEL = "\U0001f4e2"    # 📢
 EMOJI_ALERT = "\U0001f6a8"      # 🚨
 EMOJI_LOGS = "\U0001f4cb"       # 📋
 EMOJI_INCIDENT = "\U0001f6a7"   # 🚧
+EMOJI_HISTORY = "\U0001f4c2"    # 📂
+EMOJI_LINK = "\U0001f517"       # 🔗
 
 # --- Типы действий в чате ---
 ACTION_UPLOAD_VIDEO = "upload_video"
@@ -172,6 +191,7 @@ CHANNEL_LINK = "https://t.me/+PG6Vj_CWU7xmYTM6"
 MENU_REPORT = "\U0001f4dd \u0421\u043e\u043e\u0431\u0449\u0438\u0442\u044c \u043e \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u0435"  # 📝 Сообщить о проблеме
 MENU_CHANNEL = "\U0001f4e2 \u0411\u0430\u043d\u043a\u0430 \u0441 \u043d\u0435\u0439\u0440\u043e\u043d\u0430\u043c\u0438"  # 📢 Банка с нейронами
 MENU_ADMIN = "\u2699\ufe0f \u0410\u0434\u043c\u0438\u043d-\u043f\u0430\u043d\u0435\u043b\u044c"  # ⚙️ Админ-панель
+MENU_HISTORY = "\U0001f4c2 \u041c\u043e\u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438"  # 📂 Мои загрузки
 
 # --- Состояния пользователя/админа ---
 STATE_AWAITING_REPORT = "awaiting_report"
