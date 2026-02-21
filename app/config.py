@@ -76,3 +76,7 @@ ENABLE_REACTIONS = os.getenv("ENABLE_REACTIONS", "true").strip().lower() in (
 # URL локального Telegram Bot API Server (например, http://localhost:8081).
 # Если задан — используется локальный сервер с лимитом 2000 МБ вместо 50 МБ.
 TELEGRAM_API_SERVER_URL = os.getenv("TELEGRAM_API_SERVER_URL", "").strip()
+# Прокси для yt-dlp (например, socks5://127.0.0.1:1080 или http://user:pass@proxy:8080).
+# Необходим когда IP сервера заблокирован площадкой (Instagram, TikTok и др.),
+# а куки привязаны к другому IP/геолокации.
+YTDLP_PROXY = os.getenv("YTDLP_PROXY", "").strip()

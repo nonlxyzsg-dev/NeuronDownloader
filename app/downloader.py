@@ -19,6 +19,7 @@ from app.config import (
     YOUTUBE_JS_RUNTIME,
     YOUTUBE_JS_RUNTIME_PATH,
     YOUTUBE_PLAYER_CLIENTS,
+    YTDLP_PROXY,
 )
 from app.constants import PREFERRED_VIDEO_FORMAT
 
@@ -273,12 +274,15 @@ class VideoDownloader:
             youtube_args["js_runtime_path"] = YOUTUBE_JS_RUNTIME_PATH
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
+        if YTDLP_PROXY:
+            opts["proxy"] = YTDLP_PROXY
         logging.debug(
-            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s",
+            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s proxy=%s",
             skip_download,
             opts.get("format"),
             opts.get("merge_output_format"),
             YOUTUBE_PLAYER_CLIENTS or [],
+            YTDLP_PROXY or "нет",
         )
         return opts
 
