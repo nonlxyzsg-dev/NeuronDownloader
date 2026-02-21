@@ -44,22 +44,32 @@ def append_youtube_client_hint(message: str) -> str:
 # --- Форматирование текста ---
 
 
-def format_caption(title: str, video_tag: str = "") -> str:
+def format_caption(title: str, video_tag: str = "", source_url: str = "") -> str:
     """Формирует подпись к медиафайлу с заголовком и подписью бота (HTML)."""
     title = html.escape(title.strip())
     tag_line = f"\n{html.escape(video_tag)}" if video_tag else ""
+    source_line = ""
+    if source_url:
+        safe_url = html.escape(source_url, quote=True)
+        source_line = f'\n\U0001f517 <a href="{safe_url}">Ссылка на исходник</a>'
     if title:
-        caption = f"{title}\n\n{BOT_SIGNATURE}{tag_line}"
+        caption = f"{title}{source_line}\n\n{BOT_SIGNATURE}{tag_line}"
     else:
         caption = f"{BOT_SIGNATURE}{tag_line}"
     if len(caption) <= TELEGRAM_CAPTION_MAX_LENGTH:
         return caption
-    allowed_title = max(
-        0, TELEGRAM_CAPTION_MAX_LENGTH - len(BOT_SIGNATURE) - len(tag_line) - 2,
-    )
+    # Сначала пробуем обрезать заголовок, сохраняя ссылку на исходник
+    suffix = f"{source_line}\n\n{BOT_SIGNATURE}{tag_line}"
+    allowed_title = max(0, TELEGRAM_CAPTION_MAX_LENGTH - len(suffix))
     trimmed_title = title[:allowed_title].rstrip()
     if trimmed_title:
-        return f"{trimmed_title}\n\n{BOT_SIGNATURE}{tag_line}"
+        return f"{trimmed_title}{suffix}"
+    # Если не помещается даже с обрезанным заголовком — без ссылки
+    fallback_suffix = f"\n\n{BOT_SIGNATURE}{tag_line}"
+    allowed_title = max(0, TELEGRAM_CAPTION_MAX_LENGTH - len(fallback_suffix))
+    trimmed_title = title[:allowed_title].rstrip()
+    if trimmed_title:
+        return f"{trimmed_title}{fallback_suffix}"
     return (BOT_SIGNATURE + tag_line)[:TELEGRAM_CAPTION_MAX_LENGTH]
 
 

@@ -4,11 +4,20 @@ import logging
 
 from telebot import types
 
+import math
+
 from app.constants import (
     CB_ADMIN_BACK,
     CB_ADMIN_BROADCAST,
     CB_ADMIN_CHANNELS,
     CB_ADMIN_CHANNEL_DEL,
+    CB_ADMIN_HIST_ALL,
+    CB_ADMIN_HIST_PLAT_VIEW,
+    CB_ADMIN_HIST_PLATFORMS,
+    CB_ADMIN_HIST_SEND,
+    CB_ADMIN_HIST_USER_VIEW,
+    CB_ADMIN_HIST_USERS,
+    CB_ADMIN_HISTORY,
     CB_ADMIN_INCIDENTS,
     CB_ADMIN_LOGS,
     CB_ADMIN_RESTART,
@@ -35,6 +44,12 @@ from app.constants import (
     CB_INCIDENT_LIST,
     CB_INCIDENT_STATUS,
     CB_INCIDENT_VIEW,
+    CB_MY_HIST_ALL,
+    CB_MY_HIST_DATES,
+    CB_MY_HIST_PLAT_VIEW,
+    CB_MY_HIST_PLATFORMS,
+    CB_MY_HIST_SEND,
+    CB_MY_HISTORY,
     CB_REENCODE,
     CB_SPLIT_NO,
     CB_SPLIT_YES,
@@ -49,6 +64,7 @@ from app.constants import (
     EMOJI_BEST,
     EMOJI_CHANNEL,
     EMOJI_DONE,
+    EMOJI_HISTORY,
     EMOJI_INCIDENT,
     EMOJI_LOGS,
     EMOJI_RESTART,
@@ -67,6 +83,7 @@ from app.constants import (
     INCIDENT_WONT_FIX,
     MENU_ADMIN,
     MENU_CHANNEL,
+    MENU_HISTORY,
     MENU_REPORT,
     TELEGRAM_CALLBACK_DATA_MAX_BYTES,
     TELEGRAM_MAX_BUTTONS_PER_KEYBOARD,
@@ -160,7 +177,7 @@ def build_format_keyboard(
 def build_main_menu(is_admin: bool = False) -> types.ReplyKeyboardMarkup:
     """Строит главное reply-меню бота."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(MENU_CHANNEL)
+    markup.row(MENU_HISTORY, MENU_CHANNEL)
     if is_admin:
         markup.row(MENU_REPORT, MENU_ADMIN)
     else:
@@ -227,10 +244,13 @@ def build_admin_menu(open_tickets: int = 0, open_incidents: int = 0) -> types.In
     )
     markup.row(
         types.InlineKeyboardButton(text=incidents_label, callback_data=CB_ADMIN_INCIDENTS),
-        types.InlineKeyboardButton(text=f"{EMOJI_LOGS} Логи", callback_data=CB_ADMIN_LOGS),
+        types.InlineKeyboardButton(text=f"{EMOJI_HISTORY} История загрузок", callback_data=CB_ADMIN_HISTORY),
     )
     markup.row(
+        types.InlineKeyboardButton(text=f"{EMOJI_LOGS} Логи", callback_data=CB_ADMIN_LOGS),
         types.InlineKeyboardButton(text="\U0001f4e2 Рассылка", callback_data=CB_ADMIN_BROADCAST),
+    )
+    markup.row(
         types.InlineKeyboardButton(text=f"{EMOJI_RESTART} Перезапуск бота", callback_data=CB_ADMIN_RESTART),
     )
     return markup
@@ -500,4 +520,204 @@ def build_incident_actions(incident_id: int, current_status: str) -> types.Inlin
     if buttons:
         markup.row(*buttons)
     markup.row(types.InlineKeyboardButton(text=f"{EMOJI_BACK} К инцидентам", callback_data=CB_INCIDENT_LIST))
+    return markup
+
+
+# --- Клавиатуры истории загрузок ---
+
+HISTORY_PAGE_SIZE = 8
+
+
+def _truncate_title(title: str, max_len: int = 35) -> str:
+    """Обрезает заголовок для кнопки."""
+    if not title:
+        return "Без названия"
+    if len(title) <= max_len:
+        return title
+    return title[:max_len - 1] + "\u2026"
+
+
+def _history_nav_row(
+    page: int,
+    total: int,
+    cb_prefix: str,
+    cb_suffix: str = "",
+) -> list[types.InlineKeyboardButton]:
+    """Строит ряд навигации: ← Стр. X/Y →.
+
+    Формат callback_data:
+    - без суффикса: {prefix}|{page}
+    - с суффиксом: {prefix}|{suffix}|{page}
+    """
+    total_pages = max(1, math.ceil(total / HISTORY_PAGE_SIZE))
+    base = f"{cb_prefix}|{cb_suffix}|" if cb_suffix else f"{cb_prefix}|"
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(
+            text="\u2b05\ufe0f",
+            callback_data=_safe_callback_data(f"{base}{page - 1}"),
+        ))
+    nav.append(types.InlineKeyboardButton(
+        text=f"{page + 1}/{total_pages}", callback_data="noop",
+    ))
+    if page < total_pages - 1:
+        nav.append(types.InlineKeyboardButton(
+            text="\u27a1\ufe0f",
+            callback_data=_safe_callback_data(f"{base}{page + 1}"),
+        ))
+    return nav
+
+
+# --- Пользовательская история ---
+
+
+def build_my_history_menu(total_downloads: int) -> types.InlineKeyboardMarkup:
+    """Главное меню истории пользователя."""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        text=f"\U0001f4cb Все загрузки ({total_downloads})",
+        callback_data=f"{CB_MY_HIST_ALL}|0",
+    ))
+    markup.add(types.InlineKeyboardButton(
+        text="\U0001f4f1 По площадкам",
+        callback_data=CB_MY_HIST_PLATFORMS,
+    ))
+    return markup
+
+
+def build_my_history_list(
+    downloads: list[tuple],
+    page: int,
+    total: int,
+    back_cb: str,
+    send_prefix: str = CB_MY_HIST_SEND,
+    page_prefix: str = CB_MY_HIST_ALL,
+    page_suffix: str = "",
+    show_dates: bool = True,
+) -> types.InlineKeyboardMarkup:
+    """Строит список загрузок с пагинацией.
+
+    downloads: [(id, user_id, platform, status, created_at, url, title, telegram_file_id, audio_only), ...]
+    """
+    markup = types.InlineKeyboardMarkup()
+    for dl in downloads:
+        dl_id, _uid, platform, _status, created_at, _url, title, file_id, audio_only = dl
+        icon = EMOJI_AUDIO if audio_only else EMOJI_VIDEO
+        plat = (platform or "?")[:10]
+        date_str = ""
+        if show_dates and created_at:
+            date_str = f" {created_at[5:10]}"
+        display = _truncate_title(title, 28)
+        label = f"{icon} {plat}{date_str} | {display}"
+        if len(label) > 55:
+            label = label[:52] + "\u2026"
+        # Если нет file_id — кнопка неактивна
+        if file_id:
+            markup.add(types.InlineKeyboardButton(
+                text=label,
+                callback_data=_safe_callback_data(f"{send_prefix}|{dl_id}"),
+            ))
+        else:
+            markup.add(types.InlineKeyboardButton(
+                text=f"\u274c {label}",
+                callback_data="noop",
+            ))
+    if total > HISTORY_PAGE_SIZE:
+        nav = _history_nav_row(page, total, page_prefix, page_suffix)
+        markup.row(*nav)
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=back_cb,
+    ))
+    return markup
+
+
+def build_my_history_platforms(
+    platforms: list[tuple[str, int]],
+) -> types.InlineKeyboardMarkup:
+    """Список площадок с количеством загрузок."""
+    markup = types.InlineKeyboardMarkup()
+    for platform, count in platforms:
+        markup.add(types.InlineKeyboardButton(
+            text=f"\U0001f4f1 {platform} ({count})",
+            callback_data=_safe_callback_data(f"{CB_MY_HIST_PLAT_VIEW}|{platform}|0"),
+        ))
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=CB_MY_HISTORY,
+    ))
+    return markup
+
+
+# --- Админская история ---
+
+
+def build_admin_history_menu(total_downloads: int) -> types.InlineKeyboardMarkup:
+    """Главное меню истории загрузок в админке."""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        text=f"\U0001f4cb Все загрузки ({total_downloads})",
+        callback_data=f"{CB_ADMIN_HIST_ALL}|0",
+    ))
+    markup.add(types.InlineKeyboardButton(
+        text="\U0001f4f1 По площадкам",
+        callback_data=CB_ADMIN_HIST_PLATFORMS,
+    ))
+    markup.add(types.InlineKeyboardButton(
+        text=f"{EMOJI_USERS} По пользователям",
+        callback_data=f"{CB_ADMIN_HIST_USERS}|0",
+    ))
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=CB_ADMIN_BACK,
+    ))
+    return markup
+
+
+def build_admin_history_platforms(
+    platforms: list[tuple[str, int]],
+) -> types.InlineKeyboardMarkup:
+    """Список площадок для админа."""
+    markup = types.InlineKeyboardMarkup()
+    for platform, count in platforms:
+        markup.add(types.InlineKeyboardButton(
+            text=f"\U0001f4f1 {platform} ({count})",
+            callback_data=_safe_callback_data(f"{CB_ADMIN_HIST_PLAT_VIEW}|{platform}|0"),
+        ))
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=CB_ADMIN_HISTORY,
+    ))
+    return markup
+
+
+def build_admin_history_users(
+    users: list[tuple[int, str, str, int]],
+    page: int,
+    total_users: int,
+) -> types.InlineKeyboardMarkup:
+    """Список пользователей с количеством загрузок (для админа)."""
+    markup = types.InlineKeyboardMarkup()
+    for uid, username, first_name, count in users:
+        display = username or first_name or str(uid)
+        markup.add(types.InlineKeyboardButton(
+            text=f"@{display} \u2014 {count} загрузок",
+            callback_data=_safe_callback_data(f"{CB_ADMIN_HIST_USER_VIEW}|{uid}|0"),
+        ))
+    if total_users > HISTORY_PAGE_SIZE:
+        total_pages = max(1, math.ceil(total_users / HISTORY_PAGE_SIZE))
+        nav = []
+        if page > 0:
+            nav.append(types.InlineKeyboardButton(
+                text="\u2b05\ufe0f",
+                callback_data=f"{CB_ADMIN_HIST_USERS}|{page - 1}",
+            ))
+        nav.append(types.InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}", callback_data="noop",
+        ))
+        if page < total_pages - 1:
+            nav.append(types.InlineKeyboardButton(
+                text="\u27a1\ufe0f",
+                callback_data=f"{CB_ADMIN_HIST_USERS}|{page + 1}",
+            ))
+        markup.row(*nav)
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=CB_ADMIN_HISTORY,
+    ))
     return markup
