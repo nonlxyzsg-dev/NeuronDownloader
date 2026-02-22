@@ -82,6 +82,11 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     base, ext = os.path.splitext(file_path)
     output_path = f"{base}_h264{ext}"
 
+    # -vf setsar=1: нормализует SAR (Sample Aspect Ratio) в 1:1 —
+    # предотвращает растягивание видео на iPhone, которое возникает
+    # при конвертации из VP9 (разный SAR в контейнере/потоке).
+    # -pix_fmt yuv420p: максимальная совместимость с Apple-устройствами
+    # (некоторые исходники в yuv444p/yuv422p, которые iOS не отображает).
     ffmpeg_cmd = [
         "ffmpeg", "-y", "-i", file_path,
         "-c:v", "libx264",
@@ -89,6 +94,8 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
         "-crf", "23",
         "-profile:v", "high",
         "-level", "4.1",
+        "-pix_fmt", "yuv420p",
+        "-vf", "setsar=1",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path,
@@ -106,6 +113,8 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
             "-crf", "23",
             "-profile:v", "high",
             "-level", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-vf", "setsar=1",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             output_path,
@@ -240,13 +249,17 @@ class VideoDownloader:
             # Принудительно H.264 (AVC) видео + AAC аудио — работает на ВСЕХ
             # устройствах без перекодирования (iPhone, Android, десктоп).
             # VP9/AV1 не воспроизводятся в Telegram на iOS/macOS.
-            # Убраны фолбеки bestvideo+bestaudio (без фильтра кодека),
-            # чтобы никогда не скачивать VP9/AV1.
+            # best[ext=mp4] подхватывает Instagram H.264 форматы, у которых
+            # yt-dlp не может определить кодек (vcodec=null).
             "format": (
                 "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
                 "bestvideo[vcodec^=avc]+bestaudio/"
+                "best[ext=mp4]/"
                 "best"
             ),
+            # Предпочитаем H.264 при сортировке форматов — критично для
+            # Apple-совместимости и отсутствия перекодирования.
+            "format_sort": ["vcodec:h264"],
             "quiet": True,
             "skip_download": skip_download,
             "noplaylist": True,
@@ -294,8 +307,13 @@ class VideoDownloader:
         options: dict[str, tuple[FormatOption, float, bool]] = {}
         raw_heights: list[tuple[str, int | None]] = []
         for fmt in formats:
-            if fmt.get("vcodec") in (None, "none"):
-                continue
+            vcodec = fmt.get("vcodec")
+            if vcodec in (None, "none"):
+                # Instagram H.264 форматы: yt-dlp не определяет кодек (vcodec=null),
+                # но ffprobe подтверждает H.264. Включаем mp4-форматы с высотой —
+                # это позволяет пользователю выбрать качество вместо слепого best.
+                if not (vcodec is None and fmt.get("height") and (fmt.get("ext") or "").lower() == "mp4"):
+                    continue
             height = fmt.get("height")
             if height is None:
                 format_note = fmt.get("format_note") or ""
@@ -318,6 +336,10 @@ class VideoDownloader:
             current = options.get(label)
             current_tbr = float(fmt.get("tbr") or 0)
             is_h264 = _is_h264(fmt.get("vcodec"))
+            # Instagram mp4 с неизвестным кодеком — считаем H.264
+            # (yt-dlp не определяет, но ffprobe подтверждает H.264)
+            if not is_h264 and fmt.get("vcodec") is None and (fmt.get("ext") or "").lower() == "mp4":
+                is_h264 = True
             if current is None:
                 options[label] = (
                     FormatOption(label=label, format_id=format_id, height=height),
@@ -390,11 +412,13 @@ class VideoDownloader:
             # Предпочитаем AAC аудио — Opus в mp4 не воспроизводится на Apple.
             # Если запрошенный format_id окажется недоступен — фолбек на лучший
             # H.264, чтобы никогда не скачать VP9/AV1 случайно.
+            # best[ext=mp4] — для Instagram H.264 с неопределённым кодеком.
             ydl_opts["format"] = (
                 f"{format_id}+bestaudio[acodec^=mp4a]/"
                 f"{format_id}+bestaudio/"
                 "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
                 "bestvideo[vcodec^=avc]+bestaudio/"
+                "best[ext=mp4]/"
                 "best"
             )
         if progress_callback:
@@ -439,8 +463,17 @@ class VideoDownloader:
             candidates = [
                 fmt
                 for fmt in formats
-                if fmt.get("vcodec") not in (None, "none")
-                and fmt.get("acodec") not in (None, "none")
+                if (
+                    # Стандартные: известный видео + аудио кодек
+                    (fmt.get("vcodec") not in (None, "none")
+                     and fmt.get("acodec") not in (None, "none"))
+                    or
+                    # Instagram-стиль: mp4 с высотой, но vcodec/acodec не определены.
+                    # Реально содержат H.264+AAC (подтверждено ffprobe).
+                    (fmt.get("vcodec") is None
+                     and fmt.get("height")
+                     and (fmt.get("ext") or "").lower() == "mp4")
+                )
             ]
         candidates = [
             fmt
@@ -458,10 +491,13 @@ class VideoDownloader:
             # Используем mp4-фильтр только если есть mp4-кандидаты
             if mp4_candidates:
                 candidates = mp4_candidates
-            # Предпочитаем H.264 (AVC) — VP9/AV1 в mp4 не воспроизводятся на Apple
+            # Предпочитаем H.264 (AVC) — VP9/AV1 в mp4 не воспроизводятся на Apple.
+            # Instagram mp4 с неизвестным кодеком тоже считаем H.264-совместимыми
+            # (yt-dlp не определяет кодек, но ffprobe подтверждает H.264).
             h264_candidates = [
                 fmt for fmt in candidates
                 if _is_h264(fmt.get("vcodec"))
+                or (fmt.get("vcodec") is None and (fmt.get("ext") or "").lower() == "mp4")
             ]
             if h264_candidates:
                 candidates = h264_candidates

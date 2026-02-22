@@ -56,6 +56,7 @@ from app.keyboards import (
     build_format_keyboard,
     build_main_menu,
     build_split_confirm_keyboard,
+    build_video_buttons,
     build_video_report_button,
 )
 from app.downloader import _get_video_codec, ensure_h264
@@ -430,11 +431,11 @@ def register_download_handlers(ctx) -> None:
                     file_path, url,
                 )
 
-                # Проверяем кодек — если не H.264, автоматически перекодируем
-                # (страховка: формат-строки уже приоритизируют H.264, но если
-                # платформа отдала VP9/AV1/HEVC — перекодируем молча).
+                # Проверяем кодек — если не H.264, предложим кнопку перекодирования
+                # (формат-строки приоритизируют H.264, но некоторые платформы
+                # вроде Instagram/TikTok всё равно отдают VP9/HEVC).
                 original_codec = None
-                was_reencoded = False
+                needs_reencode = False
                 if not audio_only:
                     original_codec = _get_video_codec(file_path)
                     logging.info(
@@ -443,25 +444,11 @@ def register_download_handlers(ctx) -> None:
                     )
                     codec_ok = original_codec == "h264" if original_codec else True
                     if not codec_ok:
-                        if progress_message_id:
-                            try:
-                                bot.edit_message_text(
-                                    f"\U0001f504 Оптимизируем видео для воспроизведения\u2026",
-                                    chat_id, progress_message_id,
-                                )
-                            except Exception:
-                                pass
-                        reencode_start = time.monotonic()
-                        file_path, was_reencoded, original_codec = ensure_h264(file_path)
-                        if was_reencoded:
-                            reencode_duration = time.monotonic() - reencode_start
-                            total_bytes = get_file_size(file_path)
-                            logging.info(
-                                "Перекодирование в H.264 за %.2fs (новый размер=%s, путь=%s)",
-                                reencode_duration,
-                                format_bytes(total_bytes) if total_bytes else "неизвестно",
-                                file_path,
-                            )
+                        needs_reencode = True
+                        logging.info(
+                            "Кодек %s не H.264, покажем кнопку перекодирования (url=%s)",
+                            original_codec, url,
+                        )
 
                 # Если файл слишком большой, предлагаем разделить
                 if total_bytes and total_bytes > max_file_size:
@@ -512,7 +499,7 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
 
-                # Кнопка «Не воспроизводится» под видео (для обратной связи)
+                # Кнопки под видео: отчёт + опционально перекодирование
                 report_markup = None
                 if not audio_only:
                     report_token = uuid.uuid4().hex[:12]
@@ -525,7 +512,17 @@ def register_download_handlers(ctx) -> None:
                         "resolution": str(info.get("height") or ""),
                         "file_size": total_bytes,
                     }
-                    report_markup = build_video_report_button(report_token)
+                    reencode_token = None
+                    if needs_reencode:
+                        reencode_token = uuid.uuid4().hex[:12]
+                        _reencode_meta[reencode_token] = {
+                            "user_id": user_id,
+                            "url": url,
+                            "title": title,
+                            "selected_format": selected_format,
+                            "chat_id": chat_id,
+                        }
+                    report_markup = build_video_buttons(report_token, reencode_token)
 
                 with open(file_path, "rb") as handle:
                     sent_file_id = _send_media(
@@ -541,7 +538,7 @@ def register_download_handlers(ctx) -> None:
                         storage.cache_file(
                             url=url,
                             format_id=selected_format,
-                            reencoded=was_reencoded,
+                            reencoded=False,
                             audio_only=audio_only,
                             telegram_file_id=sent_file_id,
                             codec=original_codec,
@@ -550,8 +547,8 @@ def register_download_handlers(ctx) -> None:
                             platform=info.get("extractor_key", "unknown"),
                         )
                         logging.info(
-                            "Файл закэширован: url=%s format=%s reencoded=%s file_id=%s...",
-                            url, selected_format or "best", was_reencoded,
+                            "Файл закэширован: url=%s format=%s reencoded=False file_id=%s...",
+                            url, selected_format or "best",
                             sent_file_id[:20],
                         )
                     except Exception:
@@ -871,6 +868,9 @@ def register_download_handlers(ctx) -> None:
         if not options:
             has_video = any(
                 fmt.get("vcodec") not in (None, "none")
+                # Instagram mp4: vcodec=null, но реально H.264
+                or (fmt.get("vcodec") is None and fmt.get("height")
+                    and (fmt.get("ext") or "").lower() == "mp4")
                 for fmt in info.get("formats", [])
             )
             if not has_video:
