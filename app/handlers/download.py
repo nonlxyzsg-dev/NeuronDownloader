@@ -868,6 +868,9 @@ def register_download_handlers(ctx) -> None:
         if not options:
             has_video = any(
                 fmt.get("vcodec") not in (None, "none")
+                # Instagram mp4: vcodec=null, но реально H.264
+                or (fmt.get("vcodec") is None and fmt.get("height")
+                    and (fmt.get("ext") or "").lower() == "mp4")
                 for fmt in info.get("formats", [])
             )
             if not has_video:
