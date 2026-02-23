@@ -102,6 +102,37 @@ def register_download_handlers(ctx) -> None:
     # Контекст запроса для перестроения клавиатуры: токен -> {url, options, ...}
     _request_context: dict[str, dict] = {}
 
+    def _edit_quality_message(
+        chat_id: int,
+        message_id: int,
+        text: str,
+        token: str | None = None,
+        parse_mode: str = "HTML",
+        reply_markup=None,
+    ) -> None:
+        """Редактирует сообщение выбора качества (фото → caption, текст → text)."""
+        rctx = _request_context.get(token) if token else None
+        is_photo = rctx.get("is_photo", False) if rctx else False
+        try:
+            if is_photo:
+                bot.edit_message_caption(
+                    caption=text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                )
+            else:
+                bot.edit_message_text(
+                    text,
+                    chat_id,
+                    message_id,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                )
+        except Exception:
+            pass
+
     def _send_media(
         user_id: int,
         chat_id: int,
@@ -720,16 +751,10 @@ def register_download_handlers(ctx) -> None:
             result = _rebuild_format_message(inline_token, reencode_on, call.from_user.id)
             if result:
                 text, markup = result
-                try:
-                    bot.edit_message_text(
-                        text,
-                        call.message.chat.id,
-                        call.message.message_id,
-                        parse_mode="HTML",
-                        reply_markup=markup,
-                    )
-                except Exception:
-                    pass
+                _edit_quality_message(
+                    call.message.chat.id, call.message.message_id,
+                    text, token=inline_token, reply_markup=markup,
+                )
             return
 
         # Обычный выбор устройства (из /start или /device)
@@ -908,6 +933,35 @@ def register_download_handlers(ctx) -> None:
                     warning_text = append_youtube_client_hint(warning_text)
                 bot.send_message(message.chat.id, warning_text)
                 return
+        # Если только одно разрешение (или ни одного) — скачиваем сразу
+        if len(options) <= 1:
+            if download_manager.queued_count() >= download_manager.max_queue_size():
+                bot.send_message(
+                    message.chat.id,
+                    "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
+                )
+                storage.delete_request(token)
+                return
+            if not subscribed:
+                now_ts = int(datetime.now(timezone.utc).timestamp())
+                storage.log_free_download(message.from_user.id, now_ts)
+            status_text = f"{EMOJI_HOURGLASS} Загрузка: {html_mod.escape(title)}"
+            progress_msg = bot.send_message(
+                message.chat.id, status_text, parse_mode="HTML",
+            )
+            queue_download(
+                message.from_user.id,
+                message.chat.id,
+                url,
+                options[0].format_id if options else None,
+                title,
+                status_message_id=progress_msg.message_id,
+                audio_only=False,
+                reaction_message_id=reaction_message_id,
+            )
+            storage.delete_request(token)
+            return
+
         # Проверяем кэш для пометки мгновенно доступных форматов
         cached_entries = storage.get_cached_formats(url)
         cached_format_ids: set[str] = set()
@@ -936,16 +990,45 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
-        sent = bot.send_message(
-            message.chat.id,
-            (
-                f"{note}<b>Нашли видео:</b> {html_mod.escape(title)}\n"
-                "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
-                f"{cache_hint}"
-            ),
-            parse_mode="HTML",
-            reply_markup=markup,
+        caption_text = (
+            f"{note}<b>Нашли видео:</b> {html_mod.escape(title)}\n"
+            "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
+            f"{cache_hint}"
         )
+        # Пробуем отправить с превью-картинкой (send_photo), иначе текстом
+        thumbnail_url = info.get("thumbnail")
+        is_photo = False
+        sent = None
+        if thumbnail_url:
+            try:
+                sent = bot.send_photo(
+                    message.chat.id,
+                    thumbnail_url,
+                    caption=caption_text,
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+                is_photo = True
+            except Exception:
+                logging.debug("Не удалось отправить превью %s, отправляем текстом", thumbnail_url)
+                sent = None
+        if sent is None:
+            sent = bot.send_message(
+                message.chat.id,
+                caption_text,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        # Сохраняем контекст для перестроения клавиатуры (тогл, выбор устройства)
+        _request_context[token] = {
+            "title": title,
+            "options": options,
+            "cached_format_ids": cached_format_ids,
+            "has_cached_best": has_cached_best,
+            "has_cached_audio": has_cached_audio,
+            "subscribed": subscribed,
+            "is_photo": is_photo,
+        }
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
 
     # --- Обработчики callback-запросов ---
@@ -986,26 +1069,42 @@ def register_download_handlers(ctx) -> None:
         selected_format = None if format_id in (FORMAT_BEST, FORMAT_AUDIO) else format_id
         audio_only = format_id == FORMAT_AUDIO
         _reencode_toggle.pop(token, None)
+        is_photo = (_request_context.get(token) or {}).get("is_photo", False)
         _request_context.pop(token, None)
+        storage.delete_request(token)
+        # Если сообщение с выбором качества — фото, прогресс через edit_message_text
+        # не будет работать. Удаляем фото и создаём текстовое сообщение для прогресса.
+        _hourglass = f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438\u2026"
+        progress_msg_id = call.message.message_id
+        if is_photo:
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
+            try:
+                progress_msg = bot.send_message(call.message.chat.id, _hourglass)
+                progress_msg_id = progress_msg.message_id
+            except Exception:
+                progress_msg_id = None
+        else:
+            try:
+                bot.edit_message_text(
+                    _hourglass,
+                    call.message.chat.id,
+                    call.message.message_id,
+                )
+            except Exception:
+                pass
         queue_download(
             call.from_user.id,
             call.message.chat.id,
             url,
             selected_format,
             title,
-            status_message_id=call.message.message_id,
+            status_message_id=progress_msg_id,
             audio_only=audio_only,
             reaction_message_id=reaction_message_id,
         )
-        storage.delete_request(token)
-        try:
-            bot.edit_message_text(
-                f"{EMOJI_HOURGLASS} \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438\u2026",
-                call.message.chat.id,
-                call.message.message_id,
-            )
-        except Exception:
-            pass
         storage.set_last_inline_message_id(call.from_user.id, None)
 
     # --- Тогл перекодирования в клавиатуре ---
@@ -1052,16 +1151,10 @@ def register_download_handlers(ctx) -> None:
         result = _rebuild_format_message(token, new_state, call.from_user.id)
         if result:
             text, markup = result
-            try:
-                bot.edit_message_text(
-                    text,
-                    call.message.chat.id,
-                    call.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=markup,
-                )
-            except Exception:
-                pass
+            _edit_quality_message(
+                call.message.chat.id, call.message.message_id,
+                text, token=token, reply_markup=markup,
+            )
         status = "\u0412\u041a\u041b" if new_state else "\u0412\u042b\u041a\u041b"
         bot.answer_callback_query(call.id, f"\u041f\u0435\u0440\u0435\u043a\u043e\u0434\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435: {status}")
 
@@ -1089,15 +1182,11 @@ def register_download_handlers(ctx) -> None:
                 callback_data=f"{CB_DEVICE_IPHONE}|{token}",
             ),
         )
-        try:
-            bot.edit_message_text(
-                "\U0001f4f1 \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=markup,
-            )
-        except Exception:
-            pass
+        _edit_quality_message(
+            call.message.chat.id, call.message.message_id,
+            "\U0001f4f1 \u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e:",
+            token=token, reply_markup=markup,
+        )
 
     # --- Обработчики разделения видео ---
 
