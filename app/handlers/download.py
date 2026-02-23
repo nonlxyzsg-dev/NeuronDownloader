@@ -59,7 +59,7 @@ from app.keyboards import (
     build_video_buttons,
     build_video_report_button,
 )
-from app.downloader import _get_video_codec, ensure_h264
+from app.downloader import _get_video_codec, download_thumbnail, ensure_h264
 from app.utils import (
     append_youtube_client_hint,
     format_bytes,
@@ -112,6 +112,7 @@ def register_download_handlers(ctx) -> None:
         video_tag: str = "",
         reply_markup=None,
         source_url: str = "",
+        thumbnail=None,
     ) -> str | None:
         """Отправляет аудио/видео пользователю с логикой повторных попыток.
 
@@ -134,15 +135,20 @@ def register_download_handlers(ctx) -> None:
                 timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
             )
         else:
+            send_kwargs = {
+                "caption": caption,
+                "parse_mode": "HTML",
+                "timeout": TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                "supports_streaming": True,
+                "reply_markup": reply_markup,
+            }
+            if thumbnail is not None:
+                send_kwargs["thumbnail"] = thumbnail
             sent_msg = send_with_retry(
                 bot.send_video,
                 user_id,
                 source,
-                caption=caption,
-                parse_mode="HTML",
-                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
-                supports_streaming=True,
-                reply_markup=reply_markup,
+                **send_kwargs,
             )
         upload_duration = time.monotonic() - upload_start
         upload_speed = (
@@ -524,13 +530,33 @@ def register_download_handlers(ctx) -> None:
                         }
                     report_markup = build_video_buttons(report_token, reencode_token)
 
-                with open(file_path, "rb") as handle:
-                    sent_file_id = _send_media(
-                        user_id, chat_id, handle, title,
-                        audio_only, file_size=total_bytes,
-                        reply_markup=report_markup,
-                        source_url=url,
-                    )
+                # Скачиваем превью-картинку для отображения в Telegram
+                thumb_path = None
+                if not audio_only:
+                    thumb_url = info.get("thumbnail")
+                    if thumb_url:
+                        thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
+
+                try:
+                    thumb_file = None
+                    if thumb_path:
+                        thumb_file = open(thumb_path, "rb")
+                    with open(file_path, "rb") as handle:
+                        sent_file_id = _send_media(
+                            user_id, chat_id, handle, title,
+                            audio_only, file_size=total_bytes,
+                            reply_markup=report_markup,
+                            source_url=url,
+                            thumbnail=thumb_file,
+                        )
+                finally:
+                    if thumb_file:
+                        thumb_file.close()
+                    if thumb_path:
+                        try:
+                            os.remove(thumb_path)
+                        except OSError:
+                            pass
 
                 # Кэшируем file_id для мгновенной повторной отправки
                 if sent_file_id:
@@ -1093,6 +1119,8 @@ def register_download_handlers(ctx) -> None:
         split_url = pending.get("url", "")
         msg_id = call.message.message_id
 
+        split_info = pending.get("info") or {}
+
         def _split_job() -> None:
             try:
                 bot.edit_message_text(
@@ -1101,6 +1129,14 @@ def register_download_handlers(ctx) -> None:
                 )
             except Exception:
                 pass
+
+            # Скачиваем превью один раз для всех частей
+            split_thumb_path = None
+            if not audio_only:
+                thumb_url = split_info.get("thumbnail")
+                if thumb_url:
+                    split_thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
+
             parts = downloader.split_video(file_path, split_target_size)
             total_parts = len(parts)
             video_tag = f"#nd_{uuid.uuid4().hex[:6]}" if total_parts > 1 else ""
@@ -1108,13 +1144,21 @@ def register_download_handlers(ctx) -> None:
                 part_title = f"{title} (\u0447\u0430\u0441\u0442\u044c {i}/{total_parts})"
                 part_size = get_file_size(part_path)
                 try:
-                    with open(part_path, "rb") as handle:
-                        _send_media(
-                            user_id, chat_id, handle, part_title,
-                            audio_only, file_size=part_size,
-                            video_tag=video_tag,
-                            source_url=split_url,
-                        )
+                    split_thumb_file = None
+                    if split_thumb_path:
+                        split_thumb_file = open(split_thumb_path, "rb")
+                    try:
+                        with open(part_path, "rb") as handle:
+                            _send_media(
+                                user_id, chat_id, handle, part_title,
+                                audio_only, file_size=part_size,
+                                video_tag=video_tag,
+                                source_url=split_url,
+                                thumbnail=split_thumb_file,
+                            )
+                    finally:
+                        if split_thumb_file:
+                            split_thumb_file.close()
                 except Exception:
                     logging.exception("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0447\u0430\u0441\u0442\u044c %d/%d", i, total_parts)
                 finally:
@@ -1122,6 +1166,12 @@ def register_download_handlers(ctx) -> None:
                         os.remove(part_path)
                     except OSError:
                         pass
+
+            if split_thumb_path:
+                try:
+                    os.remove(split_thumb_path)
+                except OSError:
+                    pass
             # Удаляем исходный файл
             try:
                 os.remove(file_path)
@@ -1319,13 +1369,33 @@ def register_download_handlers(ctx) -> None:
                     )
                 except Exception:
                     pass
-                with open(file_path, "rb") as handle:
-                    sent_fid = _send_media(
-                        re_user_id, re_chat_id, handle,
-                        f"{re_title} (H.264)", False,
-                        file_size=total_bytes,
-                        source_url=re_url,
-                    )
+                # Скачиваем превью для перекодированного видео
+                re_thumb_path = None
+                thumb_url = info.get("thumbnail")
+                if thumb_url:
+                    re_thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
+
+                try:
+                    re_thumb_file = None
+                    if re_thumb_path:
+                        re_thumb_file = open(re_thumb_path, "rb")
+                    with open(file_path, "rb") as handle:
+                        sent_fid = _send_media(
+                            re_user_id, re_chat_id, handle,
+                            f"{re_title} (H.264)", False,
+                            file_size=total_bytes,
+                            source_url=re_url,
+                            thumbnail=re_thumb_file,
+                        )
+                finally:
+                    if re_thumb_file:
+                        re_thumb_file.close()
+                    if re_thumb_path:
+                        try:
+                            os.remove(re_thumb_path)
+                        except OSError:
+                            pass
+
                 # Кэшируем перекодированную версию
                 if sent_fid:
                     try:
