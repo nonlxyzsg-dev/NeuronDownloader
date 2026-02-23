@@ -4,6 +4,7 @@ import html as html_mod
 import logging
 import os
 import queue
+import threading
 import time
 import uuid
 
@@ -894,6 +895,33 @@ def register_download_handlers(ctx) -> None:
                 except Exception:
                     reaction_message_id = None
         bot.send_chat_action(message.chat.id, ACTION_TYPING)
+
+        # Тяжёлую работу (get_info, построение клавиатуры) выносим в фоновый
+        # поток, чтобы не блокировать обработку новых сообщений.
+        threading.Thread(
+            target=_process_link,
+            args=(message, url, subscribed, reaction_message_id),
+            daemon=True,
+        ).start()
+
+    def _process_link(
+        message: types.Message,
+        url: str,
+        subscribed: bool,
+        reaction_message_id: int | None,
+    ) -> None:
+        """Фоновая обработка ссылки: get_info + клавиатура качества / авто-скачивание."""
+        try:
+            _do_process_link(message, url, subscribed, reaction_message_id)
+        except Exception:
+            logging.exception("Ошибка обработки ссылки %s", url)
+
+    def _do_process_link(
+        message: types.Message,
+        url: str,
+        subscribed: bool,
+        reaction_message_id: int | None,
+    ) -> None:
         try:
             info = downloader.get_info(url)
         except Exception as exc:
