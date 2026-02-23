@@ -7,7 +7,7 @@ import sys
 
 from telebot import types
 
-from app.config import ADMIN_IDS, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS
+from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS
 from app.constants import (
     CB_ADMIN,
     CB_ADMIN_BROADCAST,
@@ -1146,3 +1146,61 @@ def register_admin_handlers(ctx) -> None:
             logger.warning("Не удалось уведомить пользователя %s об ответе на обращение: %s", ticket_user_id, exc)
         ctx.set_user_state(user_id, None)
         bot.send_message(message.chat.id, f"✅ Ответ отправлен по обращению #{ticket_id}.")
+
+    # ==================================================================
+    # Приём файла cookies от админа (документ .txt)
+    # ==================================================================
+
+    @bot.message_handler(
+        content_types=["document"],
+        func=lambda m: (
+            is_admin(m.from_user.id)
+            and m.document is not None
+            and (m.document.file_name or "").lower().endswith(".txt")
+            and ctx.get_user_state(m.from_user.id) is None
+        ),
+    )
+    def handle_cookies_upload(message: types.Message):
+        user_id = message.from_user.id
+        file_name = message.document.file_name or ""
+        # Принимаем только файлы с "cookie" в имени или по подписи "cookies"
+        caption = (message.caption or "").strip().lower()
+        name_lower = file_name.lower()
+        if "cookie" not in name_lower and caption != "cookies":
+            return
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+        except Exception as exc:
+            logger.exception("Не удалось скачать файл cookies от админа %s", user_id)
+            bot.send_message(message.chat.id, f"Не удалось скачать файл: {exc}")
+            return
+        # Сохраняем файл
+        cookies_path = COOKIES_FILE or "cookies.txt"
+        try:
+            with open(cookies_path, "wb") as f:
+                f.write(downloaded)
+        except Exception as exc:
+            logger.exception("Не удалось сохранить cookies в %s", cookies_path)
+            bot.send_message(message.chat.id, f"Не удалось сохранить файл: {exc}")
+            return
+        # Перезагружаем cookies в downloader
+        try:
+            result = ctx.downloader.reload_cookies()
+            if result:
+                bot.send_message(
+                    message.chat.id,
+                    f"Cookies обновлены!\n\n"
+                    f"Файл: {cookies_path}\n"
+                    f"Размер: {len(downloaded)} байт\n"
+                    f"Cookiefile: {result}",
+                )
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    f"Файл сохранён ({cookies_path}), но cookies не удалось загрузить. "
+                    "Проверьте формат файла (Netscape HTTP Cookie File).",
+                )
+        except Exception as exc:
+            logger.exception("Ошибка при перезагрузке cookies")
+            bot.send_message(message.chat.id, f"Файл сохранён, но ошибка при загрузке: {exc}")
