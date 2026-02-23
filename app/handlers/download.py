@@ -215,7 +215,18 @@ def register_download_handlers(ctx) -> None:
         audio_only: bool = False,
         reaction_message_id: int | None = None,
     ) -> None:
-        def _job() -> None:
+        """Запускает подготовку + скачивание. Подготовка — в фоновом потоке,
+        собственно скачивание — в очереди download_manager."""
+
+        def _prepare() -> None:
+            """Фоновый поток: кэш, прямая ссылка. Если не удалось —
+            ставит скачивание в очередь."""
+            try:
+                _do_prepare()
+            except Exception:
+                logging.exception("Ошибка подготовки загрузки %s", url)
+
+        def _do_prepare() -> None:
             if storage.is_blocked(user_id):
                 return
             if ctx.shutdown_requested:
@@ -233,12 +244,6 @@ def register_download_handlers(ctx) -> None:
                 )
                 return
 
-            progress_message_id: int | None = status_message_id
-            last_update = [0.0]
-            last_text = [""]
-            download_started = time.monotonic()
-            logged_missing_total = [False]
-
             username = ""
             try:
                 user_row = storage.get_user(user_id)
@@ -247,58 +252,13 @@ def register_download_handlers(ctx) -> None:
             except Exception:
                 pass
 
-            def progress_hook(data: dict) -> None:
-                if ctx.shutdown_requested:
-                    raise KeyboardInterrupt("Загрузка прервана из-за завершения работы")
-                if time.monotonic() - download_started > DOWNLOAD_TIMEOUT_SECONDS:
-                    raise TimeoutError(
-                        f"Загрузка превысила таймаут {DOWNLOAD_TIMEOUT_SECONDS}с"
-                    )
-                if not progress_message_id:
-                    return
-                if data.get("status") != "downloading":
-                    return
-                downloaded = data.get("downloaded_bytes") or 0
-                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                speed = data.get("speed")
-                eta = data.get("eta")
-                if total:
-                    percent = min(downloaded / total * 100, 100)
-                    text = (
-                        f"{EMOJI_DOWNLOAD} Скачивание: {percent:.1f}% "
-                        f"({format_bytes(downloaded)}/{format_bytes(total)}) "
-                        f"• {format_speed(speed)}"
-                    )
-                else:
-                    text = (
-                        f"{EMOJI_DOWNLOAD} Скачивание: {format_bytes(downloaded)} "
-                        f"• {format_speed(speed)}"
-                    )
-                    if not logged_missing_total[0]:
-                        logging.info(
-                            "Прогресс без общего размера (скачано=%s, скорость=%s, url=%s)",
-                            format_bytes(downloaded),
-                            format_speed(speed),
-                            url,
-                        )
-                        logged_missing_total[0] = True
-                if eta is not None:
-                    text = f"{text} • ETA {int(eta)}s"
-                now = time.monotonic()
-                if now - last_update[0] < 1:
-                    return
-                if text == last_text[0]:
-                    return
-                try:
-                    bot.edit_message_text(text, chat_id, progress_message_id)
-                    last_update[0] = now
-                    last_text[0] = text
-                except Exception:
-                    pass
+            progress_message_id: int | None = status_message_id
+            started = time.monotonic()
+            submitted_to_queue = False
 
             try:
                 logging.info(
-                    "Задача загрузки запущена: user=%s url=%s format=%s audio=%s",
+                    "Подготовка загрузки: user=%s url=%s format=%s audio=%s",
                     user_id, url, selected_format or "best", audio_only,
                 )
                 if reaction_message_id:
@@ -313,12 +273,10 @@ def register_download_handlers(ctx) -> None:
                 cached_file_id = storage.get_cached_file(
                     url, selected_format, reencoded=need_reencoded, audio_only=audio_only,
                 )
-                # Для iPhone: если нет перекодированной версии, пробуем оригинал (H.264 кэш)
                 if not cached_file_id and need_reencoded:
                     cached_file_id = storage.get_cached_file(
                         url, selected_format, reencoded=False, audio_only=audio_only,
                     )
-                # Для Android: если нет оригинала, пробуем перекодированную
                 if not cached_file_id and not need_reencoded and not audio_only:
                     cached_file_id = storage.get_cached_file(
                         url, selected_format, reencoded=True, audio_only=audio_only,
@@ -378,7 +336,7 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         progress_message_id = None
 
-                # Сначала пробуем отправить по прямой ссылке
+                # Пробуем отправить по прямой ссылке (не занимает очередь)
                 direct_info = None
                 direct_url = None
                 direct_size = None
@@ -390,13 +348,6 @@ def register_download_handlers(ctx) -> None:
                 except Exception:
                     logging.exception("Не удалось получить прямую ссылку для %s", url)
 
-                queue_delay = time.monotonic() - download_started
-                logging.info(
-                    "Загрузка начинается после %.2fs ожидания в очереди (user=%s, url=%s)",
-                    queue_delay, user_id, url,
-                )
-
-                # Пропускаем прямые ссылки для платформ с защищённым CDN
                 extractor_key = (direct_info or {}).get("extractor_key", "")
                 if direct_url and extractor_key in DIRECT_URL_SKIP_EXTRACTORS:
                     logging.info(
@@ -446,209 +397,35 @@ def register_download_handlers(ctx) -> None:
                                 "(user=%s, url=%s)", user_id, url,
                             )
 
-                # Запасной вариант: скачиваем в файл
-                if progress_message_id:
-                    try:
-                        bot.edit_message_text(
-                            f"{EMOJI_DOWNLOAD} Скачивание\u2026",
-                            chat_id, progress_message_id,
-                        )
-                    except Exception:
-                        pass
-                file_path, info = downloader.download(
-                    url, selected_format,
-                    audio_only=audio_only,
-                    progress_callback=progress_hook,
-                )
-                download_duration = time.monotonic() - download_started
-                total_bytes = get_file_size(file_path)
+                # ===== Всё быстрое не сработало — ставим в очередь скачивание =====
+                prep_duration = time.monotonic() - started
                 logging.info(
-                    "Скачивание завершено за %.2fs (размер=%s, путь=%s, url=%s)",
-                    download_duration,
-                    format_bytes(total_bytes) if total_bytes else "неизвестно",
-                    file_path, url,
+                    "Подготовка заняла %.2fs, ставим в очередь загрузку (user=%s, url=%s)",
+                    prep_duration, user_id, url,
                 )
 
-                # Проверяем кодек — если не H.264, предложим кнопку перекодирования
-                # (формат-строки приоритизируют H.264, но некоторые платформы
-                # вроде Instagram/TikTok всё равно отдают VP9/HEVC).
-                original_codec = None
-                needs_reencode = False
-                if not audio_only:
-                    original_codec = _get_video_codec(file_path)
-                    logging.info(
-                        "Кодек видео: %s (url=%s)",
-                        original_codec or "неизвестен", url,
-                    )
-                    codec_ok = original_codec == "h264" if original_codec else True
-                    if not codec_ok:
-                        needs_reencode = True
-                        logging.info(
-                            "Кодек %s не H.264, покажем кнопку перекодирования (url=%s)",
-                            original_codec, url,
-                        )
+                _final_progress_id = progress_message_id
 
-                # Если файл слишком большой, предлагаем разделить
-                if total_bytes and total_bytes > max_file_size:
-                    split_token = uuid.uuid4().hex[:12]
-                    _split_pending[split_token] = {
-                        "file_path": file_path,
-                        "title": title,
-                        "audio_only": audio_only,
-                        "user_id": user_id,
-                        "chat_id": chat_id,
-                        "info": info,
-                        "url": url,
-                    }
-                    split_text = (
-                        f"Файл слишком большой ({format_bytes(total_bytes)}). "
-                        f"Лимит Telegram \u2014 {format_bytes(max_file_size)}.\n\n"
-                        "Хотите разделить видео на части и отправить?"
+                def _download_job() -> None:
+                    _do_download(
+                        user_id, chat_id, url, selected_format, title,
+                        audio_only, username, _final_progress_id,
                     )
-                    if progress_message_id:
-                        try:
-                            bot.edit_message_text(
-                                split_text,
-                                chat_id, progress_message_id,
-                                reply_markup=build_split_confirm_keyboard(split_token),
-                            )
-                        except Exception:
-                            bot.send_message(
-                                chat_id, split_text,
-                                reply_markup=build_split_confirm_keyboard(split_token),
-                            )
-                    else:
-                        bot.send_message(
-                            chat_id, split_text,
-                            reply_markup=build_split_confirm_keyboard(split_token),
-                        )
-                    storage.log_download(
-                        user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
-                        url=url, title=title, audio_only=audio_only,
-                    )
+
+                try:
+                    download_manager.submit_user(user_id, _download_job)
+                    submitted_to_queue = True
+                except queue.Full:
+                    bot.send_message(chat_id, "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.")
                     return
 
-                if progress_message_id:
-                    try:
-                        bot.edit_message_text(
-                            f"{EMOJI_DONE} Скачано. Отправляем в Telegram\u2026",
-                            chat_id, progress_message_id,
-                        )
-                    except Exception:
-                        pass
-
-                # Кнопки под видео: отчёт + опционально перекодирование
-                report_markup = None
-                if not audio_only:
-                    report_token = uuid.uuid4().hex[:12]
-                    _video_meta[report_token] = {
-                        "user_id": user_id,
-                        "url": url,
-                        "platform": info.get("extractor_key", "unknown"),
-                        "format_id": selected_format or "best",
-                        "codec": original_codec,
-                        "resolution": str(info.get("height") or ""),
-                        "file_size": total_bytes,
-                    }
-                    reencode_token = None
-                    if needs_reencode:
-                        reencode_token = uuid.uuid4().hex[:12]
-                        _reencode_meta[reencode_token] = {
-                            "user_id": user_id,
-                            "url": url,
-                            "title": title,
-                            "selected_format": selected_format,
-                            "chat_id": chat_id,
-                        }
-                    report_markup = build_video_buttons(report_token, reencode_token)
-
-                # Скачиваем превью-картинку для отображения в Telegram
-                thumb_path = None
-                if not audio_only:
-                    thumb_url = info.get("thumbnail")
-                    if thumb_url:
-                        thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
-
-                try:
-                    thumb_file = None
-                    if thumb_path:
-                        thumb_file = open(thumb_path, "rb")
-                    with open(file_path, "rb") as handle:
-                        sent_file_id = _send_media(
-                            user_id, chat_id, handle, title,
-                            audio_only, file_size=total_bytes,
-                            reply_markup=report_markup,
-                            source_url=url,
-                            thumbnail=thumb_file,
-                        )
-                finally:
-                    if thumb_file:
-                        thumb_file.close()
-                    if thumb_path:
-                        try:
-                            os.remove(thumb_path)
-                        except OSError:
-                            pass
-
-                # Кэшируем file_id для мгновенной повторной отправки
-                if sent_file_id:
-                    try:
-                        storage.cache_file(
-                            url=url,
-                            format_id=selected_format,
-                            reencoded=False,
-                            audio_only=audio_only,
-                            telegram_file_id=sent_file_id,
-                            codec=original_codec,
-                            resolution=str(info.get("height") or ""),
-                            file_size=total_bytes,
-                            platform=info.get("extractor_key", "unknown"),
-                        )
-                        logging.info(
-                            "Файл закэширован: url=%s format=%s reencoded=False file_id=%s...",
-                            url, selected_format or "best",
-                            sent_file_id[:20],
-                        )
-                    except Exception:
-                        logging.exception("Не удалось закэшировать file_id")
-
-                try:
-                    os.remove(file_path)
-                except OSError:
-                    logging.exception("Не удалось удалить файл %s после отправки", file_path)
-
-                if progress_message_id:
-                    try:
-                        bot.delete_message(chat_id, progress_message_id)
-                    except Exception:
-                        pass
-                storage.log_download(
-                    user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
-                    url=url, title=title,
-                    telegram_file_id=sent_file_id or "",
-                    audio_only=audio_only,
-                )
-
-            except TimeoutError as exc:
-                storage.log_download(
-                    user_id, "unknown", STATUS_FAILED,
-                    url=url, title=title, audio_only=audio_only,
-                )
-                notify_admin_error(bot, user_id, username, f"Таймаут загрузки: {url}", exc)
-                if progress_message_id:
-                    try:
-                        bot.edit_message_text(
-                            f"{EMOJI_ERROR} {exc}", chat_id, progress_message_id,
-                        )
-                    except Exception:
-                        pass
             except Exception as exc:
                 storage.log_download(
                     user_id, "unknown", STATUS_FAILED,
                     url=url, title=title, audio_only=audio_only,
                 )
-                notify_admin_error(bot, user_id, username, f"Ошибка загрузки: {url}", exc)
-                error_message = f"Ошибка загрузки: {exc}"
+                notify_admin_error(bot, user_id, username, f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {url}", exc)
+                error_message = f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {exc}"
                 if is_youtube_url(url):
                     error_message = append_youtube_client_hint(error_message)
                 if progress_message_id:
@@ -660,20 +437,302 @@ def register_download_handlers(ctx) -> None:
                     except Exception:
                         pass
                 else:
-                    bot.send_message(user_id, error_message)
+                    try:
+                        bot.send_message(user_id, error_message)
+                    except Exception:
+                        pass
             finally:
-                active_downloads.release(url)
+                # active_downloads освобождаем, только если НЕ поставили
+                # задачу в очередь (иначе освободит _do_download в finally)
+                if not submitted_to_queue:
+                    active_downloads.release(url)
+
+        threading.Thread(target=_prepare, daemon=True).start()
+
+    def _do_download(
+        user_id: int,
+        chat_id: int,
+        url: str,
+        selected_format: str | None,
+        title: str,
+        audio_only: bool,
+        username: str,
+        progress_message_id: int | None,
+    ) -> None:
+        """Выполняется в воркер-потоке очереди. Только скачивание + отправка."""
+        download_started = time.monotonic()
+        last_update = [0.0]
+        last_text = [""]
+        logged_missing_total = [False]
+        _progress_msg_id = [progress_message_id]
+
+        def progress_hook(data: dict) -> None:
+            if ctx.shutdown_requested:
+                raise KeyboardInterrupt("Загрузка прервана из-за завершения работы")
+            if time.monotonic() - download_started > DOWNLOAD_TIMEOUT_SECONDS:
+                raise TimeoutError(
+                    f"Загрузка превысила таймаут {DOWNLOAD_TIMEOUT_SECONDS}с"
+                )
+            if not _progress_msg_id[0]:
+                return
+            if data.get("status") != "downloading":
+                return
+            downloaded = data.get("downloaded_bytes") or 0
+            total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            speed = data.get("speed")
+            eta = data.get("eta")
+            if total:
+                percent = min(downloaded / total * 100, 100)
+                text = (
+                    f"{EMOJI_DOWNLOAD} Скачивание: {percent:.1f}% "
+                    f"({format_bytes(downloaded)}/{format_bytes(total)}) "
+                    f"• {format_speed(speed)}"
+                )
+            else:
+                text = (
+                    f"{EMOJI_DOWNLOAD} Скачивание: {format_bytes(downloaded)} "
+                    f"• {format_speed(speed)}"
+                )
+                if not logged_missing_total[0]:
+                    logging.info(
+                        "Прогресс без общего размера (скачано=%s, скорость=%s, url=%s)",
+                        format_bytes(downloaded),
+                        format_speed(speed),
+                        url,
+                    )
+                    logged_missing_total[0] = True
+            if eta is not None:
+                text = f"{text} • ETA {int(eta)}s"
+            now = time.monotonic()
+            if now - last_update[0] < 1:
+                return
+            if text == last_text[0]:
+                return
+            try:
+                bot.edit_message_text(text, chat_id, _progress_msg_id[0])
+                last_update[0] = now
+                last_text[0] = text
+            except Exception:
+                pass
 
         try:
-            logging.info(
-                "Состояние очереди: в_очереди=%s/%s активных_у_пользователя=%s",
-                download_manager.queued_count(),
-                download_manager.max_queue_size(),
-                download_manager.active_count(user_id),
+            if _progress_msg_id[0]:
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_DOWNLOAD} Скачивание\u2026",
+                        chat_id, _progress_msg_id[0],
+                    )
+                except Exception:
+                    pass
+            file_path, info = downloader.download(
+                url, selected_format,
+                audio_only=audio_only,
+                progress_callback=progress_hook,
             )
-            download_manager.submit_user(user_id, _job)
-        except queue.Full:
-            bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
+            download_duration = time.monotonic() - download_started
+            total_bytes = get_file_size(file_path)
+            logging.info(
+                "Скачивание завершено за %.2fs (размер=%s, путь=%s, url=%s)",
+                download_duration,
+                format_bytes(total_bytes) if total_bytes else "неизвестно",
+                file_path, url,
+            )
+
+            # Проверяем кодек — если не H.264, предложим кнопку перекодирования
+            original_codec = None
+            needs_reencode = False
+            if not audio_only:
+                original_codec = _get_video_codec(file_path)
+                logging.info(
+                    "Кодек видео: %s (url=%s)",
+                    original_codec or "неизвестен", url,
+                )
+                codec_ok = original_codec == "h264" if original_codec else True
+                if not codec_ok:
+                    needs_reencode = True
+                    logging.info(
+                        "Кодек %s не H.264, покажем кнопку перекодирования (url=%s)",
+                        original_codec, url,
+                    )
+
+            # Если файл слишком большой, предлагаем разделить
+            if total_bytes and total_bytes > max_file_size:
+                split_token = uuid.uuid4().hex[:12]
+                _split_pending[split_token] = {
+                    "file_path": file_path,
+                    "title": title,
+                    "audio_only": audio_only,
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "info": info,
+                    "url": url,
+                }
+                split_text = (
+                    f"Файл слишком большой ({format_bytes(total_bytes)}). "
+                    f"Лимит Telegram \u2014 {format_bytes(max_file_size)}.\n\n"
+                    "Хотите разделить видео на части и отправить?"
+                )
+                if _progress_msg_id[0]:
+                    try:
+                        bot.edit_message_text(
+                            split_text,
+                            chat_id, _progress_msg_id[0],
+                            reply_markup=build_split_confirm_keyboard(split_token),
+                        )
+                    except Exception:
+                        bot.send_message(
+                            chat_id, split_text,
+                            reply_markup=build_split_confirm_keyboard(split_token),
+                        )
+                else:
+                    bot.send_message(
+                        chat_id, split_text,
+                        reply_markup=build_split_confirm_keyboard(split_token),
+                    )
+                storage.log_download(
+                    user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                    url=url, title=title, audio_only=audio_only,
+                )
+                return
+
+            if _progress_msg_id[0]:
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_DONE} Скачано. Отправляем в Telegram\u2026",
+                        chat_id, _progress_msg_id[0],
+                    )
+                except Exception:
+                    pass
+
+            # Кнопки под видео: отчёт + опционально перекодирование
+            report_markup = None
+            if not audio_only:
+                report_token = uuid.uuid4().hex[:12]
+                _video_meta[report_token] = {
+                    "user_id": user_id,
+                    "url": url,
+                    "platform": info.get("extractor_key", "unknown"),
+                    "format_id": selected_format or "best",
+                    "codec": original_codec,
+                    "resolution": str(info.get("height") or ""),
+                    "file_size": total_bytes,
+                }
+                reencode_token = None
+                if needs_reencode:
+                    reencode_token = uuid.uuid4().hex[:12]
+                    _reencode_meta[reencode_token] = {
+                        "user_id": user_id,
+                        "url": url,
+                        "title": title,
+                        "selected_format": selected_format,
+                        "chat_id": chat_id,
+                    }
+                report_markup = build_video_buttons(report_token, reencode_token)
+
+            # Скачиваем превью-картинку для отображения в Telegram
+            thumb_path = None
+            if not audio_only:
+                thumb_url = info.get("thumbnail")
+                if thumb_url:
+                    thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
+
+            try:
+                thumb_file = None
+                if thumb_path:
+                    thumb_file = open(thumb_path, "rb")
+                with open(file_path, "rb") as handle:
+                    sent_file_id = _send_media(
+                        user_id, chat_id, handle, title,
+                        audio_only, file_size=total_bytes,
+                        reply_markup=report_markup,
+                        source_url=url,
+                        thumbnail=thumb_file,
+                    )
+            finally:
+                if thumb_file:
+                    thumb_file.close()
+                if thumb_path:
+                    try:
+                        os.remove(thumb_path)
+                    except OSError:
+                        pass
+
+            # Кэшируем file_id для мгновенной повторной отправки
+            if sent_file_id:
+                try:
+                    storage.cache_file(
+                        url=url,
+                        format_id=selected_format,
+                        reencoded=False,
+                        audio_only=audio_only,
+                        telegram_file_id=sent_file_id,
+                        codec=original_codec,
+                        resolution=str(info.get("height") or ""),
+                        file_size=total_bytes,
+                        platform=info.get("extractor_key", "unknown"),
+                    )
+                    logging.info(
+                        "Файл закэширован: url=%s format=%s reencoded=False file_id=%s...",
+                        url, selected_format or "best",
+                        sent_file_id[:20],
+                    )
+                except Exception:
+                    logging.exception("Не удалось закэшировать file_id")
+
+            try:
+                os.remove(file_path)
+            except OSError:
+                logging.exception("Не удалось удалить файл %s после отправки", file_path)
+
+            if _progress_msg_id[0]:
+                try:
+                    bot.delete_message(chat_id, _progress_msg_id[0])
+                except Exception:
+                    pass
+            storage.log_download(
+                user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                url=url, title=title,
+                telegram_file_id=sent_file_id or "",
+                audio_only=audio_only,
+            )
+
+        except TimeoutError as exc:
+            storage.log_download(
+                user_id, "unknown", STATUS_FAILED,
+                url=url, title=title, audio_only=audio_only,
+            )
+            notify_admin_error(bot, user_id, username, f"\u0422\u0430\u0439\u043c\u0430\u0443\u0442 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {url}", exc)
+            if _progress_msg_id[0]:
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_ERROR} {exc}", chat_id, _progress_msg_id[0],
+                    )
+                except Exception:
+                    pass
+        except Exception as exc:
+            storage.log_download(
+                user_id, "unknown", STATUS_FAILED,
+                url=url, title=title, audio_only=audio_only,
+            )
+            notify_admin_error(bot, user_id, username, f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {url}", exc)
+            error_message = f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {exc}"
+            if is_youtube_url(url):
+                error_message = append_youtube_client_hint(error_message)
+            if _progress_msg_id[0]:
+                try:
+                    bot.edit_message_text(
+                        f"{EMOJI_ERROR} {error_message}",
+                        chat_id, _progress_msg_id[0],
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    bot.send_message(user_id, error_message)
+                except Exception:
+                    pass
+        finally:
+            active_downloads.release(url)
 
     # --- Обработчики сообщений ---
 
