@@ -1,4 +1,5 @@
 import os
+import shutil
 
 from dotenv import load_dotenv
 
@@ -61,6 +62,23 @@ YOUTUBE_PLAYER_CLIENTS = [
 ]
 YOUTUBE_JS_RUNTIME = os.getenv("YOUTUBE_JS_RUNTIME", "").strip()
 YOUTUBE_JS_RUNTIME_PATH = os.getenv("YOUTUBE_JS_RUNTIME_PATH", "").strip()
+
+# Автодетект JS-рантайма для YouTube n-challenge, если не задан явно.
+# Без рантайма yt-dlp не может решить n-параметр и YouTube отдаёт только картинки.
+if not YOUTUBE_JS_RUNTIME or not YOUTUBE_JS_RUNTIME_PATH:
+    _JS_RUNTIMES = [
+        ("nodejs", "node"),
+        ("deno", "deno"),
+        ("bun", "bun"),
+    ]
+    for _rt_name, _rt_bin in _JS_RUNTIMES:
+        _found = shutil.which(_rt_bin)
+        if _found:
+            if not YOUTUBE_JS_RUNTIME:
+                YOUTUBE_JS_RUNTIME = _rt_name
+            if not YOUTUBE_JS_RUNTIME_PATH:
+                YOUTUBE_JS_RUNTIME_PATH = _found
+            break
 USER_AGENT = os.getenv(
     "USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

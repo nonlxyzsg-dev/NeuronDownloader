@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
+import requests
 from yt_dlp import YoutubeDL
 
 from app.config import (
@@ -161,6 +162,68 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     return file_path, True, codec
 
 
+def download_thumbnail(url: str | None, data_dir: str) -> str | None:
+    """Скачивает превью-картинку по URL и возвращает путь к файлу.
+
+    Telegram требует JPEG-изображение не больше 200 КБ и 320x320 пикселей
+    для превью видео. Скачиваем картинку и при необходимости конвертируем
+    через ffmpeg в подходящий JPEG.
+    """
+    if not url:
+        return None
+
+    thumb_path = os.path.join(data_dir, f"thumb_{int(time.time())}.jpg")
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
+        resp.raise_for_status()
+        if not resp.content or len(resp.content) < 100:
+            return None
+
+        raw_path = os.path.join(data_dir, f"thumb_raw_{int(time.time())}")
+        with open(raw_path, "wb") as f:
+            f.write(resp.content)
+
+        # Конвертируем в JPEG 320x320 (вписываем, сохраняя пропорции)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", raw_path,
+                    "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+                    "-q:v", "5",
+                    thumb_path,
+                ],
+                capture_output=True, timeout=15, check=True,
+            )
+        except Exception:
+            logging.debug("ffmpeg-конвертация превью не удалась, используем оригинал")
+            # Если ffmpeg не сработал, пробуем использовать файл как есть
+            if resp.headers.get("content-type", "").startswith("image/jpeg"):
+                os.replace(raw_path, thumb_path)
+            else:
+                try:
+                    os.remove(raw_path)
+                except OSError:
+                    pass
+                return None
+        else:
+            try:
+                os.remove(raw_path)
+            except OSError:
+                pass
+
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+            return thumb_path
+
+    except Exception:
+        logging.debug("Не удалось скачать превью: %s", url)
+
+    try:
+        os.remove(thumb_path)
+    except OSError:
+        pass
+    return None
+
+
 class YtDlpLogger:
     """Логгер-обёртка для перенаправления вывода yt-dlp в стандартный logging."""
 
@@ -281,17 +344,19 @@ class VideoDownloader:
         if YOUTUBE_PLAYER_CLIENTS:
             youtube_args["player_client"] = YOUTUBE_PLAYER_CLIENTS
         if YOUTUBE_JS_RUNTIME:
-            youtube_args["js_runtime"] = YOUTUBE_JS_RUNTIME
+            youtube_args["js_runtime"] = [YOUTUBE_JS_RUNTIME]
         if YOUTUBE_JS_RUNTIME_PATH:
-            youtube_args["js_runtime_path"] = YOUTUBE_JS_RUNTIME_PATH
+            youtube_args["js_runtime_path"] = [YOUTUBE_JS_RUNTIME_PATH]
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         logging.debug(
-            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s",
+            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s js_runtime=%s js_runtime_path=%s",
             skip_download,
             opts.get("format"),
             opts.get("merge_output_format"),
             YOUTUBE_PLAYER_CLIENTS or [],
+            YOUTUBE_JS_RUNTIME or "auto",
+            YOUTUBE_JS_RUNTIME_PATH or "auto",
         )
         return opts
 

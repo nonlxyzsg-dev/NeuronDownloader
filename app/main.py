@@ -24,6 +24,8 @@ from app.config import (
     TELEGRAM_API_SERVER_URL,
     TELEGRAM_POLLING_ERROR_DELAY_SECONDS,
     TELEGRAM_POLLING_DNS_DELAY_SECONDS,
+    YOUTUBE_JS_RUNTIME,
+    YOUTUBE_JS_RUNTIME_PATH,
 )
 from app.download_queue import DownloadManager
 from app.downloader import VideoDownloader
@@ -278,6 +280,14 @@ def main() -> None:
         len(ADMIN_IDS),
         len(REQUIRED_CHAT_IDS),
     )
+    if YOUTUBE_JS_RUNTIME and YOUTUBE_JS_RUNTIME_PATH:
+        logging.info(
+            "YouTube JS runtime: %s (%s)", YOUTUBE_JS_RUNTIME, YOUTUBE_JS_RUNTIME_PATH,
+        )
+    else:
+        logging.warning(
+            "YouTube JS runtime не найден — n-challenge не будет решён, форматы YouTube могут быть недоступны",
+        )
 
     # --- Обработка завершения ---
 
