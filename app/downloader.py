@@ -344,17 +344,19 @@ class VideoDownloader:
         if YOUTUBE_PLAYER_CLIENTS:
             youtube_args["player_client"] = YOUTUBE_PLAYER_CLIENTS
         if YOUTUBE_JS_RUNTIME:
-            youtube_args["js_runtime"] = YOUTUBE_JS_RUNTIME
+            youtube_args["js_runtime"] = [YOUTUBE_JS_RUNTIME]
         if YOUTUBE_JS_RUNTIME_PATH:
-            youtube_args["js_runtime_path"] = YOUTUBE_JS_RUNTIME_PATH
+            youtube_args["js_runtime_path"] = [YOUTUBE_JS_RUNTIME_PATH]
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         logging.debug(
-            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s",
+            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s js_runtime=%s js_runtime_path=%s",
             skip_download,
             opts.get("format"),
             opts.get("merge_output_format"),
             YOUTUBE_PLAYER_CLIENTS or [],
+            YOUTUBE_JS_RUNTIME or "auto",
+            YOUTUBE_JS_RUNTIME_PATH or "auto",
         )
         return opts
 
