@@ -70,6 +70,7 @@ from app.utils import (
     get_file_size,
     is_admin,
     is_youtube_url,
+    notify_admin_cookies_expired,
     notify_admin_error,
     send_with_retry,
 )
@@ -448,6 +449,9 @@ def register_download_handlers(ctx) -> None:
                     active_downloads.release(url)
 
         threading.Thread(target=_prepare, daemon=True).start()
+
+    # Открываем queue_download для вызова из других модулей (напр. admin.py)
+    ctx.queue_download = queue_download
 
     def _do_download(
         user_id: int,
@@ -988,9 +992,15 @@ def register_download_handlers(ctx) -> None:
             if "sign in to confirm" in error_text.lower():
                 bot.send_message(
                     message.chat.id,
-                    "YouTube \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f \u0432\u0445\u043e\u0434\u0430. "
-                    "\u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 cookies \u0438 \u043f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u043e\u043f\u044b\u0442\u043a\u0443.",
+                    "⏳ Возникла техническая проблема с YouTube, "
+                    "мы уже работаем над её исправлением.\n\n"
+                    "Ваш ролик будет скачан и отправлен вам "
+                    "автоматически, как только проблема будет устранена.",
                 )
+                storage.add_pending_cookie_download(
+                    message.from_user.id, message.chat.id, url, "YouTube",
+                )
+                notify_admin_cookies_expired(bot, "YouTube")
             else:
                 error_message = f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443: {exc}"
                 if is_youtube_url(url):

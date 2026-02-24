@@ -41,6 +41,20 @@ class Storage:
             if "device_type" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN device_type TEXT")
 
+            # Таблица отложенных загрузок (cookie-ошибки)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_cookie_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT 'YouTube',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
             # Расширение downloads для истории загрузок
             dl_cols = {row[1] for row in conn.execute("PRAGMA table_info(downloads)").fetchall()}
             if "url" not in dl_cols:
@@ -157,6 +171,19 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                )
+                """
+            )
+            # --- Отложенные загрузки (cookie-ошибки) ---
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_cookie_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT 'YouTube',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -803,3 +830,56 @@ class Storage:
         with self._connect() as conn:
             count = conn.execute("SELECT COUNT(*) FROM file_cache").fetchone()[0]
         return count, 0
+
+    # --- Отложенные загрузки (cookie-ошибки) ---
+
+    def add_pending_cookie_download(
+        self, user_id: int, chat_id: int, url: str, platform: str = "YouTube",
+    ) -> int:
+        """Добавляет отложенную загрузку. Возвращает ID записи."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO pending_cookie_downloads (user_id, chat_id, url, platform) "
+                "VALUES (?, ?, ?, ?)",
+                (user_id, chat_id, url, platform),
+            )
+            return cur.lastrowid
+
+    def list_pending_cookie_downloads(
+        self, platform: str | None = None,
+    ) -> list[tuple[int, int, int, str, str, str]]:
+        """Возвращает отложенные загрузки: [(id, user_id, chat_id, url, platform, created_at), ...]."""
+        with self._connect() as conn:
+            if platform:
+                cur = conn.execute(
+                    "SELECT id, user_id, chat_id, url, platform, created_at "
+                    "FROM pending_cookie_downloads WHERE platform = ? "
+                    "ORDER BY created_at ASC",
+                    (platform,),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT id, user_id, chat_id, url, platform, created_at "
+                    "FROM pending_cookie_downloads ORDER BY created_at ASC"
+                )
+            return cur.fetchall()
+
+    def delete_pending_cookie_download(self, download_id: int) -> None:
+        """Удаляет отложенную загрузку по ID."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_cookie_downloads WHERE id = ?",
+                (download_id,),
+            )
+
+    def count_pending_cookie_downloads(self, platform: str | None = None) -> int:
+        """Считает отложенные загрузки."""
+        with self._connect() as conn:
+            if platform:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM pending_cookie_downloads WHERE platform = ?",
+                    (platform,),
+                ).fetchone()[0]
+            return conn.execute(
+                "SELECT COUNT(*) FROM pending_cookie_downloads"
+            ).fetchone()[0]

@@ -33,6 +33,7 @@ from app.handlers import register_all_handlers
 from app.logger import setup_logging
 from app.storage import Storage
 from app.cleanup import DataCleanupMonitor
+from app.cookie_monitor import CookieHealthMonitor
 from app.utils import (
     ActiveDownloads,
     MembershipCache,
@@ -272,6 +273,9 @@ def main() -> None:
     cleanup_monitor = DataCleanupMonitor()
     cleanup_monitor.start()
 
+    cookie_monitor = CookieHealthMonitor(bot, downloader)
+    cookie_monitor.start()
+
     # Регистрация обработчиков (сначала админ, затем поддержка, потом скачивание/catch-all)
     register_all_handlers(ctx)
     logging.info(
@@ -304,6 +308,7 @@ def main() -> None:
             logging.debug("Ошибка при остановке polling: %s", e)
         download_manager.shutdown()
         cleanup_monitor.stop()
+        cookie_monitor.stop()
         logging.info("Все компоненты остановлены")
 
         def force_exit():
