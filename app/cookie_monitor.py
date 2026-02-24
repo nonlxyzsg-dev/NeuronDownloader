@@ -3,7 +3,7 @@
 import logging
 import threading
 
-from app.config import COOKIE_CHECK_INTERVAL_SECONDS, YOUTUBEYOUTUBE_TEST_URL
+from app.config import COOKIE_CHECK_INTERVAL_SECONDS, YOUTUBE_TEST_URL
 
 logger = logging.getLogger(__name__)
 
