@@ -253,6 +253,11 @@ class VideoDownloader:
         os.makedirs(self.data_dir, exist_ok=True)
         self.cookiefile = self._prepare_cookiefile()
 
+    def reload_cookies(self) -> str | None:
+        """Перечитывает файл cookies с диска (после обновления)."""
+        self.cookiefile = self._prepare_cookiefile()
+        return self.cookiefile
+
     def _prepare_cookiefile(self) -> str | None:
         """Подготавливает и санитизирует файл cookies (формат Netscape)."""
         if not COOKIES_FILE:
