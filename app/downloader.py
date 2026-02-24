@@ -344,24 +344,29 @@ class VideoDownloader:
             opts["username"] = VK_USERNAME
         if VK_PASSWORD:
             opts["password"] = VK_PASSWORD
+        # JS-рантайм для YouTube n-challenge — top-level опция yt-dlp,
+        # НЕ YouTube extractor arg. Формат: {'node': {'path': '/usr/bin/node'}}.
+        # По умолчанию yt-dlp включает только deno; если deno нет — нужно
+        # явно включить доступный рантайм, иначе n-challenge не решится
+        # и YouTube отдаст только картинки вместо видеоформатов.
+        if YOUTUBE_JS_RUNTIME:
+            rt_config: dict = {}
+            if YOUTUBE_JS_RUNTIME_PATH:
+                rt_config["path"] = YOUTUBE_JS_RUNTIME_PATH
+            opts["js_runtimes"] = {YOUTUBE_JS_RUNTIME: rt_config}
         extractor_args = opts.setdefault("extractor_args", {})
         youtube_args = extractor_args.setdefault("youtube", {})
         if YOUTUBE_PLAYER_CLIENTS:
             youtube_args["player_client"] = YOUTUBE_PLAYER_CLIENTS
-        if YOUTUBE_JS_RUNTIME:
-            youtube_args["js_runtime"] = [YOUTUBE_JS_RUNTIME]
-        if YOUTUBE_JS_RUNTIME_PATH:
-            youtube_args["js_runtime_path"] = [YOUTUBE_JS_RUNTIME_PATH]
         if self.cookiefile:
             opts["cookiefile"] = self.cookiefile
         logging.debug(
-            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s js_runtime=%s js_runtime_path=%s",
+            "Опции yt-dlp: skip_download=%s format=%s merge_output=%s player_clients=%s js_runtimes=%s",
             skip_download,
             opts.get("format"),
             opts.get("merge_output_format"),
             YOUTUBE_PLAYER_CLIENTS or [],
-            YOUTUBE_JS_RUNTIME or "auto",
-            YOUTUBE_JS_RUNTIME_PATH or "auto",
+            opts.get("js_runtimes", {}),
         )
         return opts
 

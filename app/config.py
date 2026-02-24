@@ -67,7 +67,7 @@ YOUTUBE_JS_RUNTIME_PATH = os.getenv("YOUTUBE_JS_RUNTIME_PATH", "").strip()
 # Без рантайма yt-dlp не может решить n-параметр и YouTube отдаёт только картинки.
 if not YOUTUBE_JS_RUNTIME or not YOUTUBE_JS_RUNTIME_PATH:
     _JS_RUNTIMES = [
-        ("nodejs", "node"),
+        ("node", "node"),
         ("deno", "deno"),
         ("bun", "bun"),
     ]
