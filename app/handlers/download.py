@@ -548,9 +548,10 @@ def register_download_handlers(ctx) -> None:
                 file_path, url,
             )
 
-            # Проверяем кодек — если не H.264, предложим кнопку перекодирования
+            # Проверяем кодек — если не H.264, перекодируем или предложим кнопку
             original_codec = None
             needs_reencode = False
+            was_auto_reencoded = False
             if not audio_only:
                 original_codec = _get_video_codec(file_path)
                 logging.info(
@@ -559,11 +560,42 @@ def register_download_handlers(ctx) -> None:
                 )
                 codec_ok = original_codec == "h264" if original_codec else True
                 if not codec_ok:
-                    needs_reencode = True
-                    logging.info(
-                        "Кодек %s не H.264, покажем кнопку перекодирования (url=%s)",
-                        original_codec, url,
-                    )
+                    # Для iPhone/iPad автоматически перекодируем в H.264,
+                    # чтобы видео не зависало на первом кадре в Telegram.
+                    # VP9/AV1 не воспроизводятся на Apple-устройствах.
+                    user_device = storage.get_user_device_type(user_id)
+                    if user_device == DEVICE_IPHONE:
+                        logging.info(
+                            "Автоперекодирование для iPhone: %s -> H.264 (url=%s)",
+                            original_codec, url,
+                        )
+                        if _progress_msg_id[0]:
+                            try:
+                                size_mb = (total_bytes or 0) / (1024 * 1024)
+                                est_minutes = max(1, int(size_mb * 0.6))
+                                bot.edit_message_text(
+                                    f"\U0001f504 Перекодируем видео в H.264 для iPhone\u2026\n"
+                                    f"\u23f3 Это может занять ~{est_minutes} мин.",
+                                    chat_id, _progress_msg_id[0],
+                                )
+                            except Exception:
+                                pass
+                        reencode_start = time.monotonic()
+                        file_path, was_auto_reencoded, _ = ensure_h264(file_path)
+                        reencode_duration = time.monotonic() - reencode_start
+                        total_bytes = get_file_size(file_path)
+                        logging.info(
+                            "Автоперекодирование завершено за %.2fs (кодек=%s, размер=%s, url=%s)",
+                            reencode_duration, original_codec,
+                            format_bytes(total_bytes) if total_bytes else "?",
+                            url,
+                        )
+                    else:
+                        needs_reencode = True
+                        logging.info(
+                            "Кодек %s не H.264, покажем кнопку перекодирования (url=%s)",
+                            original_codec, url,
+                        )
 
             # Если файл слишком большой, предлагаем разделить
             if total_bytes and total_bytes > max_file_size:
@@ -673,17 +705,18 @@ def register_download_handlers(ctx) -> None:
                     storage.cache_file(
                         url=url,
                         format_id=selected_format,
-                        reencoded=False,
+                        reencoded=was_auto_reencoded,
                         audio_only=audio_only,
                         telegram_file_id=sent_file_id,
-                        codec=original_codec,
+                        codec="h264" if was_auto_reencoded else original_codec,
                         resolution=str(info.get("height") or ""),
                         file_size=total_bytes,
                         platform=info.get("extractor_key", "unknown"),
                     )
                     logging.info(
-                        "Файл закэширован: url=%s format=%s reencoded=False file_id=%s...",
+                        "Файл закэширован: url=%s format=%s reencoded=%s file_id=%s...",
                         url, selected_format or "best",
+                        was_auto_reencoded,
                         sent_file_id[:20],
                     )
                 except Exception:
