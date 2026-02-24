@@ -1190,20 +1190,93 @@ def register_admin_handlers(ctx) -> None:
         # Перезагружаем cookies в downloader
         try:
             result = ctx.downloader.reload_cookies()
-            if result:
-                bot.send_message(
-                    message.chat.id,
-                    f"Cookies обновлены!\n\n"
-                    f"Файл: {cookies_path}\n"
-                    f"Размер: {len(downloaded)} байт\n"
-                    f"Cookiefile: {result}",
-                )
-            else:
+            if not result:
                 bot.send_message(
                     message.chat.id,
                     f"Файл сохранён ({cookies_path}), но cookies не удалось загрузить. "
                     "Проверьте формат файла (Netscape HTTP Cookie File).",
                 )
+                return
         except Exception as exc:
             logger.exception("Ошибка при перезагрузке cookies")
             bot.send_message(message.chat.id, f"Файл сохранён, но ошибка при загрузке: {exc}")
+            return
+
+        # Проверяем работоспособность cookies
+        bot.send_message(message.chat.id, "🔍 Проверяю cookies...")
+        _TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        cookies_ok = False
+        try:
+            ctx.downloader.get_info(_TEST_URL)
+            cookies_ok = True
+        except Exception as check_exc:
+            if "sign in to confirm" in str(check_exc).lower():
+                bot.send_message(
+                    message.chat.id,
+                    f"❌ Cookies НЕ рабочие — YouTube по-прежнему требует авторизацию.\n\n"
+                    f"Файл: {cookies_path}\n"
+                    f"Размер: {len(downloaded)} байт\n"
+                    "Попробуйте загрузить другой файл cookies.",
+                )
+                return
+            # Другая ошибка (сеть и т.д.) — cookies могут быть ОК
+            logger.warning("Проверка cookies: ошибка (не auth): %s", check_exc)
+            cookies_ok = True  # не блокируем, ошибка не связана с cookies
+
+        # Cookies рабочие
+        pending = storage.list_pending_cookie_downloads("YouTube")
+        pending_count = len(pending)
+        status_text = (
+            f"✅ Cookies рабочие!\n\n"
+            f"Файл: {cookies_path}\n"
+            f"Размер: {len(downloaded)} байт\n"
+            f"Cookiefile: {result}"
+        )
+        if pending_count > 0:
+            status_text += f"\n\n📋 Отложенных загрузок: {pending_count} — начинаю обработку..."
+        bot.send_message(message.chat.id, status_text)
+
+        # Обрабатываем отложенные загрузки
+        if pending_count > 0:
+            _process_pending_cookie_downloads(message.chat.id, pending)
+
+    def _process_pending_cookie_downloads(
+        admin_chat_id: int,
+        pending: list[tuple],
+    ) -> None:
+        """Обрабатывает отложенные загрузки после обновления cookies."""
+        import threading
+
+        def _process() -> None:
+            sent = 0
+            failed = 0
+            for row in pending:
+                pid, uid, cid, url, platform, created_at = row
+                try:
+                    bot.send_message(
+                        cid,
+                        "✅ Проблема с YouTube устранена! Начинаю загрузку вашего ролика...",
+                    )
+                    if hasattr(ctx, "queue_download"):
+                        ctx.queue_download(
+                            uid, cid, url,
+                            selected_format=None,
+                            title="Отложенная загрузка",
+                            audio_only=False,
+                        )
+                    sent += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось обработать отложенную загрузку %d для user=%d: %s",
+                        pid, uid, exc,
+                    )
+                    failed += 1
+                storage.delete_pending_cookie_download(pid)
+
+            bot.send_message(
+                admin_chat_id,
+                f"📋 Отложенные загрузки обработаны.\n"
+                f"Запущено: {sent}\nОшибок: {failed}",
+            )
+
+        threading.Thread(target=_process, daemon=True).start()
