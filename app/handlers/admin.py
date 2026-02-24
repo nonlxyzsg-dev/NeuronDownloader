@@ -1151,23 +1151,26 @@ def register_admin_handlers(ctx) -> None:
     # Приём файла cookies от админа (документ .txt)
     # ==================================================================
 
+    def _is_cookies_document(m: types.Message) -> bool:
+        """Проверяет, является ли документ файлом cookies от админа."""
+        if not is_admin(m.from_user.id):
+            return False
+        if m.document is None:
+            return False
+        if ctx.get_user_state(m.from_user.id) is not None:
+            return False
+        name = (m.document.file_name or "").lower()
+        caption = (m.caption or "").strip().lower()
+        if not name.endswith(".txt"):
+            return False
+        return "cookie" in name or caption == "cookies"
+
     @bot.message_handler(
         content_types=["document"],
-        func=lambda m: (
-            is_admin(m.from_user.id)
-            and m.document is not None
-            and (m.document.file_name or "").lower().endswith(".txt")
-            and ctx.get_user_state(m.from_user.id) is None
-        ),
+        func=_is_cookies_document,
     )
     def handle_cookies_upload(message: types.Message):
         user_id = message.from_user.id
-        file_name = message.document.file_name or ""
-        # Принимаем только файлы с "cookie" в имени или по подписи "cookies"
-        caption = (message.caption or "").strip().lower()
-        name_lower = file_name.lower()
-        if "cookie" not in name_lower and caption != "cookies":
-            return
         try:
             file_info = bot.get_file(message.document.file_id)
             downloaded = bot.download_file(file_info.file_path)
