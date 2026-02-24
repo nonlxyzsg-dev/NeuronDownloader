@@ -162,6 +162,26 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     return file_path, True, codec
 
 
+def download_preview_image(url: str | None) -> bytes | None:
+    """Скачивает превью-картинку по URL и возвращает байты изображения.
+
+    Используется для отправки превью в сообщении выбора качества.
+    Instagram/TikTok CDN блокируют прямой доступ по URL из серверов Telegram,
+    поэтому скачиваем картинку локально и отправляем как файл.
+    """
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
+        resp.raise_for_status()
+        if not resp.content or len(resp.content) < 100:
+            return None
+        return resp.content
+    except Exception:
+        logging.debug("Не удалось скачать превью-картинку: %s", url)
+        return None
+
+
 def download_thumbnail(url: str | None, data_dir: str) -> str | None:
     """Скачивает превью-картинку по URL и возвращает путь к файлу.
 

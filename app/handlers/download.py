@@ -1,6 +1,7 @@
 """Обработчики скачивания: приём URL, выбор качества, задача загрузки."""
 
 import html as html_mod
+import io
 import logging
 import os
 import queue
@@ -60,7 +61,12 @@ from app.keyboards import (
     build_video_buttons,
     build_video_report_button,
 )
-from app.downloader import _get_video_codec, download_thumbnail, ensure_h264
+from app.downloader import (
+    _get_video_codec,
+    download_preview_image,
+    download_thumbnail,
+    ensure_h264,
+)
 from app.utils import (
     append_youtube_client_hint,
     format_bytes,
@@ -1092,15 +1098,18 @@ def register_download_handlers(ctx) -> None:
             "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
             f"{cache_hint}"
         )
-        # Пробуем отправить с превью-картинкой (send_photo), иначе текстом
+        # Пробуем отправить с превью-картинкой (send_photo), иначе текстом.
+        # Скачиваем картинку локально, т.к. CDN Instagram/TikTok блокируют
+        # прямой доступ по URL из серверов Telegram.
         thumbnail_url = info.get("thumbnail")
         is_photo = False
         sent = None
-        if thumbnail_url:
+        preview_data = download_preview_image(thumbnail_url)
+        if preview_data:
             try:
                 sent = bot.send_photo(
                     message.chat.id,
-                    thumbnail_url,
+                    io.BytesIO(preview_data),
                     caption=caption_text,
                     parse_mode="HTML",
                     reply_markup=markup,
