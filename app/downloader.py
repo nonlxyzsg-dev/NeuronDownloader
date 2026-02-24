@@ -323,6 +323,7 @@ class VideoDownloader:
                 "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
                 "bestvideo[vcodec^=avc]+bestaudio/"
                 "best[ext=mp4]/"
+                "bestvideo+bestaudio/"
                 "best"
             ),
             # Предпочитаем H.264 при сортировке форматов — критично для
@@ -372,7 +373,13 @@ class VideoDownloader:
 
     def get_info(self, url: str) -> dict:
         """Получает метаданные видео без скачивания."""
-        with YoutubeDL(self._base_opts(skip_download=True)) as ydl:
+        opts = self._base_opts(skip_download=True)
+        # Для получения метаданных используем максимально допустимый формат,
+        # чтобы не получить «Requested format is not available» на DASH-only
+        # видео (YouTube Shorts и др.), где нет комбинированных форматов.
+        # Реальный выбор формата происходит при скачивании.
+        opts["format"] = "bestvideo*+bestaudio/best"
+        with YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
     def list_formats(self, info: dict) -> list[FormatOption]:
@@ -494,6 +501,7 @@ class VideoDownloader:
                 "bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/"
                 "bestvideo[vcodec^=avc]+bestaudio/"
                 "best[ext=mp4]/"
+                "bestvideo+bestaudio/"
                 "best"
             )
         if progress_callback:
