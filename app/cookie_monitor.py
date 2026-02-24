@@ -3,12 +3,9 @@
 import logging
 import threading
 
-from app.config import COOKIE_CHECK_INTERVAL_SECONDS
+from app.config import COOKIE_CHECK_INTERVAL_SECONDS, YOUTUBEYOUTUBE_TEST_URL
 
 logger = logging.getLogger(__name__)
-
-# Публичное короткое видео YouTube — стабильный тестовый URL.
-_TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 
 class CookieHealthMonitor:
@@ -44,7 +41,7 @@ class CookieHealthMonitor:
         from app.utils import notify_admin_cookies_expired
 
         try:
-            self._downloader.get_info(_TEST_URL)
+            self._downloader.get_info(YOUTUBE_TEST_URL)
             logger.debug("Cookie-check YouTube: OK")
         except Exception as exc:
             error_text = str(exc).lower()

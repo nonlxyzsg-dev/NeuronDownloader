@@ -12,6 +12,9 @@ CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "600"))
 CLEANUP_MAX_AGE_SECONDS = int(os.getenv("CLEANUP_MAX_AGE_SECONDS", "18000"))
 COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
 COOKIE_CHECK_INTERVAL_SECONDS = int(os.getenv("COOKIE_CHECK_INTERVAL_SECONDS", "1800"))
+YOUTUBE_TEST_URL = os.getenv(
+    "YOUTUBE_TEST_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+)
 ADMIN_IDS = [
     int(value.strip())
     for value in os.getenv("ADMIN_IDS", "").split(",")

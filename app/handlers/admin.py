@@ -7,7 +7,7 @@ import sys
 
 from telebot import types
 
-from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS
+from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS, YOUTUBE_TEST_URL
 from app.constants import (
     CB_ADMIN,
     CB_ADMIN_BROADCAST,
@@ -1204,10 +1204,9 @@ def register_admin_handlers(ctx) -> None:
 
         # Проверяем работоспособность cookies
         bot.send_message(message.chat.id, "🔍 Проверяю cookies...")
-        _TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         cookies_ok = False
         try:
-            ctx.downloader.get_info(_TEST_URL)
+            ctx.downloader.get_info(YOUTUBE_TEST_URL)
             cookies_ok = True
         except Exception as check_exc:
             if "sign in to confirm" in str(check_exc).lower():
