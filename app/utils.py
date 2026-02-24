@@ -174,6 +174,32 @@ def send_with_retry(send_func, *args, **kwargs):
 # --- Уведомления об ошибках ---
 
 
+# Дебаунс уведомлений о протухших cookies: не чаще раза в 30 минут на сервис
+_cookies_alert_lock = threading.Lock()
+_cookies_alert_last: dict[str, float] = {}  # platform -> monotonic timestamp
+_COOKIES_ALERT_COOLDOWN = 30 * 60  # 30 минут
+
+
+def notify_admin_cookies_expired(bot, platform: str) -> None:
+    """Уведомляет админов о протухших cookies для сервиса (с дебаунсом)."""
+    now = time.monotonic()
+    with _cookies_alert_lock:
+        last = _cookies_alert_last.get(platform, 0)
+        if now - last < _COOKIES_ALERT_COOLDOWN:
+            return
+        _cookies_alert_last[platform] = now
+    message = (
+        f"{EMOJI_ALERT} <b>Cookies {platform} протухли!</b>\n\n"
+        f"Пользователь получил ошибку авторизации.\n"
+        f"Загрузите свежие cookies через бота."
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            bot.send_message(admin_id, message, parse_mode="HTML")
+        except Exception:
+            logging.debug("Не удалось уведомить админа %s о cookies", admin_id)
+
+
 def notify_admin_error(bot, user_id: int, username: str, action: str, error: Exception) -> None:
     """Отправляет уведомление об ошибке всем админам с контекстом пользователя."""
     tb = traceback.format_exc()
