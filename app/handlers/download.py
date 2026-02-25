@@ -67,6 +67,7 @@ from app.downloader import (
     download_preview_image,
     download_thumbnail,
     ensure_h264,
+    fix_h264_sar,
 )
 from app.utils import (
     append_youtube_client_hint,
@@ -560,6 +561,10 @@ def register_download_handlers(ctx) -> None:
                     original_codec or "неизвестен", url,
                 )
                 codec_ok = original_codec == "h264" if original_codec else True
+                if codec_ok and original_codec:
+                    # H.264 с кривым SAR — iPhone покажет сплющенное видео.
+                    # Быстрый фикс через bitstream filter (без перекодирования).
+                    file_path = fix_h264_sar(file_path)
                 if not codec_ok:
                     # Для iPhone/iPad автоматически перекодируем в H.264,
                     # чтобы видео не зависало на первом кадре в Telegram.
