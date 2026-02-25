@@ -59,6 +59,72 @@ def _get_video_codec(file_path: str) -> str | None:
     return None
 
 
+def _get_video_sar(file_path: str) -> str | None:
+    """Возвращает SAR (sample_aspect_ratio) первого видеопотока, например '1:1'."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=sample_aspect_ratio",
+                "-of", "json",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = json.loads(result.stdout)
+        streams = info.get("streams") or []
+        if streams:
+            return streams[0].get("sample_aspect_ratio")
+    except Exception:
+        logging.exception("ffprobe SAR не удался для %s", file_path)
+    return None
+
+
+def fix_h264_sar(file_path: str) -> str:
+    """Исправляет SAR на 1:1 для H.264 видео без перекодирования.
+
+    Использует bitstream filter h264_metadata — правит SAR прямо в
+    H.264 bitstream, копируя аудио без изменений. Мгновенная операция.
+    Возвращает путь к исправленному файлу (или исходному, если SAR уже ОК).
+    """
+    sar = _get_video_sar(file_path)
+    if sar is None or sar in ("1:1", "N/A"):
+        logging.info("SAR уже корректен (%s), пропускаем: %s", sar, file_path)
+        return file_path
+
+    logging.info("SAR=%s, исправляем на 1:1 (без перекодирования): %s", sar, file_path)
+
+    base, ext = os.path.splitext(file_path)
+    output_path = f"{base}_sar{ext}"
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c", "copy",
+        "-bsf:v", "h264_metadata=sample_aspect_ratio=1/1",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+    except Exception:
+        logging.exception("Не удалось исправить SAR для %s", file_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path
+
+    # Заменяем оригинал
+    try:
+        os.replace(output_path, file_path)
+    except OSError:
+        logging.exception("Не удалось заменить файл после SAR-фикса: %s", file_path)
+        return output_path
+
+    logging.info("SAR исправлен на 1:1: %s", file_path)
+    return file_path
+
+
 def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     """Перекодирует видео в H.264, если текущий кодек несовместим с Apple.
 
