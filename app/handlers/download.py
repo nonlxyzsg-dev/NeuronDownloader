@@ -38,6 +38,7 @@ from app.constants import (
     EMOJI_DONE,
     EMOJI_ERROR,
     EMOJI_HOURGLASS,
+    EMOJI_WARNING,
     EMOJI_ZAP,
     FORMAT_AUDIO,
     FORMAT_BEST,
@@ -1051,7 +1052,7 @@ def register_download_handlers(ctx) -> None:
         token = storage.create_request(
             url, title, str(reaction_message_id or ""), channel_url,
         )
-        options = downloader.list_formats(info)
+        options, h264_unavailable = downloader.list_formats(info)
         if not options:
             has_video = any(
                 fmt.get("vcodec") not in (None, "none")
@@ -1126,10 +1127,17 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
+        codec_hint = ""
+        if h264_unavailable:
+            codec_hint = (
+                f"\n\n{EMOJI_WARNING} Видео доступно только в формате VP9/AV1. "
+                "На iPhone может не воспроизводиться \u2014 "
+                "перекодируем автоматически."
+            )
         caption_text = (
             f"{note}<b>Нашли видео:</b> {html_mod.escape(title)}\n"
             "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
-            f"{cache_hint}"
+            f"{cache_hint}{codec_hint}"
         )
         # Пробуем отправить с превью-картинкой (send_photo), иначе текстом.
         # Скачиваем картинку локально, т.к. CDN Instagram/TikTok блокируют
@@ -1167,6 +1175,7 @@ def register_download_handlers(ctx) -> None:
             "has_cached_audio": has_cached_audio,
             "subscribed": subscribed,
             "is_photo": is_photo,
+            "h264_unavailable": h264_unavailable,
         }
         storage.set_last_inline_message_id(message.from_user.id, sent.message_id)
 
@@ -1268,10 +1277,17 @@ def register_download_handlers(ctx) -> None:
         cache_hint = ""
         if any_cached:
             cache_hint = f"\n{EMOJI_ZAP} \u2014 \u0443\u0436\u0435 \u0441\u043a\u0430\u0447\u0430\u043d\u043e, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043c \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u043e"
+        codec_hint = ""
+        if rctx.get("h264_unavailable"):
+            codec_hint = (
+                f"\n\n{EMOJI_WARNING} Видео доступно только в формате VP9/AV1. "
+                "На iPhone может не воспроизводиться \u2014 "
+                "перекодируем автоматически."
+            )
         text = (
             f"{note}<b>Нашли видео:</b> {html_mod.escape(rctx['title'])}\n"
             "Выберите качество ниже или нажмите <b>Максимальное</b> / <b>Только звук</b>."
-            f"{cache_hint}"
+            f"{cache_hint}{codec_hint}"
         )
         return text, markup
 
