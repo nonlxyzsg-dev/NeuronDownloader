@@ -83,9 +83,13 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
     base, ext = os.path.splitext(file_path)
     output_path = f"{base}_h264{ext}"
 
-    # -vf setsar=1: нормализует SAR (Sample Aspect Ratio) в 1:1 —
-    # предотвращает растягивание видео на iPhone, которое возникает
-    # при конвертации из VP9 (разный SAR в контейнере/потоке).
+    # -vf scale=...,setsar=1: «впекает» SAR в реальные пиксели, затем
+    # выставляет SAR 1:1. Без scale одного setsar=1 недостаточно — если
+    # исходное видео (VP9 шортсы и т.п.) хранится с нестандартным SAR,
+    # плеер на iPhone покажет сплющенную картинку, т.к. Telegram/iOS
+    # не всегда корректно применяют SAR из контейнера.
+    # trunc(...*sar/2)*2 — ширина с учётом SAR, округлённая до чётного
+    # (H.264 требует чётные размеры). Если SAR=1:1, scale — identity.
     # -pix_fmt yuv420p: максимальная совместимость с Apple-устройствами
     # (некоторые исходники в yuv444p/yuv422p, которые iOS не отображает).
     ffmpeg_cmd = [
@@ -96,7 +100,7 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
         "-profile:v", "high",
         "-level", "4.1",
         "-pix_fmt", "yuv420p",
-        "-vf", "setsar=1",
+        "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_path,
@@ -115,7 +119,7 @@ def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
             "-profile:v", "high",
             "-level", "4.1",
             "-pix_fmt", "yuv420p",
-            "-vf", "setsar=1",
+            "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             output_path,
