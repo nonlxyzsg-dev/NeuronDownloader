@@ -494,9 +494,21 @@ class VideoDownloader:
         except Exception as exc:
             if not _is_youtube_format_error(exc):
                 raise
-            # YouTube: формат недоступен с текущими player_client.
-            # Пробуем альтернативные наборы клиентов (SABR/PO-token/age-gate
-            # затрагивают разных клиентов по-разному).
+            # YouTube: ошибка «Requested format is not available» часто
+            # транзиентна (rate-limit, ротация форматов, SABR flap).
+            # Ждём 3 секунды и пробуем те же настройки ещё раз.
+            logging.info(
+                "YouTube get_info: формат недоступен, retry через 3с: %s", url,
+            )
+            import time as _time
+            _time.sleep(3)
+            try:
+                with YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception:
+                pass
+            # Простой retry не помог — пробуем альтернативные player_client
+            # (SABR/PO-token/age-gate затрагивают разных клиентов по-разному).
             return self._retry_with_fallback_clients(url, opts, exc)
 
     def _retry_with_fallback_clients(
@@ -679,20 +691,31 @@ class VideoDownloader:
         except Exception as exc:
             if not _is_youtube_format_error(exc):
                 raise
-            # YouTube: формат недоступен — пробуем fallback-клиенты
-            # с базовым форматом (без привязки к конкретному format_id).
+            # Транзиентная ошибка YouTube — ждём 3с и пробуем ещё раз
+            # с теми же настройками (ротация форматов, rate-limit flap).
             logging.warning(
-                "YouTube download: формат недоступен, retry с fallback-клиентами: %s",
-                url,
+                "YouTube download: формат недоступен, retry через 3с: %s", url,
             )
-            fallback_opts = self._base_opts()
-            if progress_callback:
-                fallback_opts["progress_hooks"] = [progress_callback]
-            info = self._retry_with_fallback_clients(
-                url, fallback_opts, exc, download=True,
-            )
-            with YoutubeDL(fallback_opts) as ydl_fb:
-                file_path = ydl_fb.prepare_filename(info)
+            import time as _time
+            _time.sleep(3)
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    file_path = ydl.prepare_filename(info)
+            except Exception:
+                # Простой retry не помог — пробуем fallback-клиенты
+                # с базовым форматом (без привязки к конкретному format_id).
+                logging.warning(
+                    "YouTube download: retry не помог, fallback-клиенты: %s", url,
+                )
+                fallback_opts = self._base_opts()
+                if progress_callback:
+                    fallback_opts["progress_hooks"] = [progress_callback]
+                info = self._retry_with_fallback_clients(
+                    url, fallback_opts, exc, download=True,
+                )
+                with YoutubeDL(fallback_opts) as ydl_fb:
+                    file_path = ydl_fb.prepare_filename(info)
         if info.get("_filename"):
             file_path = info["_filename"]
         # После постобработки расширение могло измениться — проверяем наличие файла
