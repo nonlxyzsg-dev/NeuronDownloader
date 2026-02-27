@@ -15,6 +15,9 @@ COOKIE_CHECK_INTERVAL_SECONDS = int(os.getenv("COOKIE_CHECK_INTERVAL_SECONDS", "
 YOUTUBE_TEST_URL = os.getenv(
     "YOUTUBE_TEST_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 )
+INSTAGRAM_TEST_URL = os.getenv(
+    "INSTAGRAM_TEST_URL", "https://www.instagram.com/instagram/"
+)
 ADMIN_IDS = [
     int(value.strip())
     for value in os.getenv("ADMIN_IDS", "").split(",")
@@ -61,7 +64,7 @@ SUPPORTED_YOUTUBE_PLAYER_CLIENTS = [
 ]
 YOUTUBE_PLAYER_CLIENTS = [
     value.strip()
-    for value in os.getenv("YOUTUBE_PLAYER_CLIENTS", "android,web").split(",")
+    for value in os.getenv("YOUTUBE_PLAYER_CLIENTS", "android_vr,web,web_safari").split(",")
     if value.strip() and value.strip() in SUPPORTED_YOUTUBE_PLAYER_CLIENTS
 ]
 YOUTUBE_JS_RUNTIME = os.getenv("YOUTUBE_JS_RUNTIME", "").strip()
