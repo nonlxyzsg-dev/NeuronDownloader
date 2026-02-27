@@ -23,6 +23,25 @@ from app.config import (
 )
 from app.constants import PREFERRED_VIDEO_FORMAT
 
+# Наборы player_client для повторных попыток YouTube.
+# Если первая попытка с текущими настройками провалилась с
+# «Requested format is not available», перебираем альтернативные конфигурации:
+# SABR, PO-token и возрастные ограничения затрагивают клиентов по-разному.
+_YOUTUBE_RETRY_CLIENT_SETS: list[list[str]] = [
+    ["android_vr", "web"],
+    ["default"],
+    ["tv_downgraded", "web"],
+]
+
+
+def _is_youtube_format_error(exc: Exception) -> bool:
+    """Ошибка «Requested format is not available» от YouTube."""
+    error_lower = str(exc).lower()
+    return (
+        "youtube" in error_lower
+        and "requested format is not available" in error_lower
+    )
+
 
 def _is_h264(vcodec: str | None) -> bool:
     """Проверяет, является ли видеокодек H.264 (AVC).
@@ -469,8 +488,70 @@ class VideoDownloader:
         # видео (YouTube Shorts и др.), где нет комбинированных форматов.
         # Реальный выбор формата происходит при скачивании.
         opts["format"] = "bestvideo*+bestaudio/best"
-        with YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
+        try:
+            with YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as exc:
+            if not _is_youtube_format_error(exc):
+                raise
+            # YouTube: ошибка «Requested format is not available» часто
+            # транзиентна (rate-limit, ротация форматов, SABR flap).
+            # Ждём 3 секунды и пробуем те же настройки ещё раз.
+            logging.info(
+                "YouTube get_info: формат недоступен, retry через 3с: %s", url,
+            )
+            import time as _time
+            _time.sleep(3)
+            try:
+                with YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception:
+                pass
+            # Простой retry не помог — пробуем альтернативные player_client
+            # (SABR/PO-token/age-gate затрагивают разных клиентов по-разному).
+            return self._retry_with_fallback_clients(url, opts, exc)
+
+    def _retry_with_fallback_clients(
+        self,
+        url: str,
+        base_opts: dict,
+        original_exc: Exception,
+        download: bool = False,
+    ) -> dict:
+        """Повторяет запрос к YouTube с альтернативными player_client."""
+        import copy
+
+        for clients in _YOUTUBE_RETRY_CLIENT_SETS:
+            try:
+                opts = copy.deepcopy(base_opts)
+                opts.setdefault("extractor_args", {})["youtube"] = {
+                    "player_client": clients,
+                }
+                logging.info(
+                    "YouTube retry с player_client=%s: %s", clients, url,
+                )
+                with YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=download)
+            except Exception:
+                continue
+
+        # Последняя попытка: без cookies (иногда cookies вызывают
+        # SABR-enforcement, а без них YouTube отдаёт обычные форматы).
+        try:
+            opts = copy.deepcopy(base_opts)
+            opts.pop("cookiefile", None)
+            opts.setdefault("extractor_args", {})["youtube"] = {
+                "player_client": ["default"],
+            }
+            logging.info(
+                "YouTube retry без cookies, player_client=default: %s", url,
+            )
+            with YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=download)
+        except Exception:
+            pass
+
+        raise original_exc
 
     def list_formats(self, info: dict) -> tuple[list[FormatOption], bool]:
         """Извлекает список доступных форматов (разрешений) из метаданных.
@@ -603,9 +684,38 @@ class VideoDownloader:
             )
         if progress_callback:
             ydl_opts["progress_hooks"] = [progress_callback]
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-        file_path = ydl.prepare_filename(info)
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                file_path = ydl.prepare_filename(info)
+        except Exception as exc:
+            if not _is_youtube_format_error(exc):
+                raise
+            # Транзиентная ошибка YouTube — ждём 3с и пробуем ещё раз
+            # с теми же настройками (ротация форматов, rate-limit flap).
+            logging.warning(
+                "YouTube download: формат недоступен, retry через 3с: %s", url,
+            )
+            import time as _time
+            _time.sleep(3)
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    file_path = ydl.prepare_filename(info)
+            except Exception:
+                # Простой retry не помог — пробуем fallback-клиенты
+                # с базовым форматом (без привязки к конкретному format_id).
+                logging.warning(
+                    "YouTube download: retry не помог, fallback-клиенты: %s", url,
+                )
+                fallback_opts = self._base_opts()
+                if progress_callback:
+                    fallback_opts["progress_hooks"] = [progress_callback]
+                info = self._retry_with_fallback_clients(
+                    url, fallback_opts, exc, download=True,
+                )
+                with YoutubeDL(fallback_opts) as ydl_fb:
+                    file_path = ydl_fb.prepare_filename(info)
         if info.get("_filename"):
             file_path = info["_filename"]
         # После постобработки расширение могло измениться — проверяем наличие файла

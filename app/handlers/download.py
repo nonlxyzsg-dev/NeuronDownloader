@@ -77,6 +77,7 @@ from app.utils import (
     format_speed,
     get_file_size,
     is_admin,
+    is_instagram_url,
     is_youtube_url,
     notify_admin_cookies_expired,
     notify_admin_error,
@@ -759,27 +760,66 @@ def register_download_handlers(ctx) -> None:
                 except Exception:
                     pass
         except Exception as exc:
-            storage.log_download(
-                user_id, "unknown", STATUS_FAILED,
-                url=url, title=title, audio_only=audio_only,
-            )
-            notify_admin_error(bot, user_id, username, f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {url}", exc)
-            error_message = f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {exc}"
-            if is_youtube_url(url):
-                error_message = append_youtube_client_hint(error_message)
-            if _progress_msg_id[0]:
-                try:
-                    bot.edit_message_text(
-                        f"{EMOJI_ERROR} {error_message}",
-                        chat_id, _progress_msg_id[0],
-                    )
-                except Exception:
-                    pass
+            error_lower = str(exc).lower()
+            # Instagram: ошибка авторизации/rate-limit при скачивании —
+            # ставим в очередь ожидания, уведомляем админа.
+            if is_instagram_url(url) and (
+                "login required" in error_lower
+                or "rate-limit reached" in error_lower
+                or "requested content is not available" in error_lower
+                or "unable to extract video url" in error_lower
+                or "empty media response" in error_lower
+                or "locked behind the login page" in error_lower
+                or "checkpoint required" in error_lower
+            ):
+                if _progress_msg_id[0]:
+                    try:
+                        bot.edit_message_text(
+                            "⏳ Этот контент в Instagram требует авторизации.\n\n"
+                            "Ваш ролик будет скачан и отправлен вам "
+                            "автоматически, как только мы обновим доступ к Instagram.",
+                            chat_id, _progress_msg_id[0],
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        bot.send_message(
+                            chat_id,
+                            "⏳ Этот контент в Instagram требует авторизации.\n\n"
+                            "Ваш ролик будет скачан и отправлен вам "
+                            "автоматически, как только мы обновим доступ к Instagram.",
+                        )
+                    except Exception:
+                        pass
+                storage.add_pending_cookie_download(user_id, chat_id, url, "Instagram")
+                notify_admin_cookies_expired(bot, "Instagram")
+                storage.log_download(
+                    user_id, "Instagram", STATUS_FAILED,
+                    url=url, title=title, audio_only=audio_only,
+                )
             else:
-                try:
-                    bot.send_message(user_id, error_message)
-                except Exception:
-                    pass
+                storage.log_download(
+                    user_id, "unknown", STATUS_FAILED,
+                    url=url, title=title, audio_only=audio_only,
+                )
+                notify_admin_error(bot, user_id, username, f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {url}", exc)
+                error_message = f"\u041e\u0448\u0438\u0431\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438: {exc}"
+                if is_youtube_url(url):
+                    error_message = append_youtube_client_hint(error_message)
+                if _progress_msg_id[0]:
+                    try:
+                        bot.edit_message_text(
+                            f"{EMOJI_ERROR} {error_message}",
+                            chat_id, _progress_msg_id[0],
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        bot.send_message(user_id, error_message)
+                    except Exception:
+                        pass
         finally:
             active_downloads.release(url)
 
@@ -1034,7 +1074,8 @@ def register_download_handlers(ctx) -> None:
             info = downloader.get_info(url)
         except Exception as exc:
             error_text = str(exc)
-            if "sign in to confirm" in error_text.lower():
+            error_lower = error_text.lower()
+            if "sign in to confirm" in error_lower:
                 bot.send_message(
                     message.chat.id,
                     "⏳ Возникла техническая проблема с YouTube, "
@@ -1046,6 +1087,45 @@ def register_download_handlers(ctx) -> None:
                     message.from_user.id, message.chat.id, url, "YouTube",
                 )
                 notify_admin_cookies_expired(bot, "YouTube")
+            elif is_youtube_url(url) and "requested format is not available" in error_lower:
+                # Если даже после retry с fallback-клиентами формат
+                # недоступен — сообщаем пользователю и ставим в очередь.
+                bot.send_message(
+                    message.chat.id,
+                    "⏳ Это видео временно недоступно для скачивания "
+                    "из-за ограничений YouTube.\n\n"
+                    "Ваш ролик будет скачан и отправлен вам "
+                    "автоматически, как только проблема будет устранена.",
+                )
+                storage.add_pending_cookie_download(
+                    message.from_user.id, message.chat.id, url, "YouTube",
+                )
+                notify_admin_cookies_expired(bot, "YouTube")
+            elif is_instagram_url(url) and (
+                "inappropriate" in error_lower
+                or "unavailable for certain audiences" in error_lower
+                or "login required" in error_lower
+                or "rate-limit reached" in error_lower
+                or "rate_limit_reached" in error_lower
+                or "requested content is not available" in error_lower
+                or "content is not available" in error_lower
+                or "unable to extract video url" in error_lower
+                or "empty media response" in error_lower
+                or "locked behind the login page" in error_lower
+                or "checkpoint required" in error_lower
+                or "please wait a few minutes" in error_lower
+            ):
+                bot.send_message(
+                    message.chat.id,
+                    "⏳ Этот контент в Instagram помечен как ограниченный "
+                    "и требует авторизации для просмотра.\n\n"
+                    "Ваш ролик будет скачан и отправлен вам "
+                    "автоматически, как только мы обновим доступ к Instagram.",
+                )
+                storage.add_pending_cookie_download(
+                    message.from_user.id, message.chat.id, url, "Instagram",
+                )
+                notify_admin_cookies_expired(bot, "Instagram")
             else:
                 error_message = f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443: {exc}"
                 if is_youtube_url(url):

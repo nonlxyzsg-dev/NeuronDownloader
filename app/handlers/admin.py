@@ -1222,8 +1222,9 @@ def register_admin_handlers(ctx) -> None:
             logger.warning("Проверка cookies: ошибка (не auth): %s", check_exc)
             cookies_ok = True  # не блокируем, ошибка не связана с cookies
 
-        # Cookies рабочие
-        pending = storage.list_pending_cookie_downloads("YouTube")
+        # Cookies рабочие — обрабатываем отложенные загрузки всех платформ
+        # (cookies-файл общий, может содержать cookies для YouTube, Instagram и др.)
+        pending = storage.list_pending_cookie_downloads()
         pending_count = len(pending)
         status_text = (
             f"✅ Cookies рабочие!\n\n"
@@ -1254,7 +1255,7 @@ def register_admin_handlers(ctx) -> None:
                 try:
                     bot.send_message(
                         cid,
-                        "✅ Проблема с YouTube устранена! Начинаю загрузку вашего ролика...",
+                        f"✅ Проблема с {platform} устранена! Начинаю загрузку вашего ролика...",
                     )
                     if hasattr(ctx, "queue_download"):
                         ctx.queue_download(
