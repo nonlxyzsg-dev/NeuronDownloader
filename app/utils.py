@@ -32,6 +32,11 @@ def is_youtube_url(url: str) -> bool:
     return "youtube.com" in lowered or "youtu.be" in lowered
 
 
+def is_instagram_url(url: str) -> bool:
+    lowered = url.lower()
+    return "instagram.com" in lowered or "instagr.am" in lowered
+
+
 def append_youtube_client_hint(message: str) -> str:
     hint = (
         "\u041f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0430: \u043f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 YOUTUBE_PLAYER_CLIENTS=default "

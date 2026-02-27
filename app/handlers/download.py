@@ -77,6 +77,7 @@ from app.utils import (
     format_speed,
     get_file_size,
     is_admin,
+    is_instagram_url,
     is_youtube_url,
     notify_admin_cookies_expired,
     notify_admin_error,
@@ -1034,7 +1035,8 @@ def register_download_handlers(ctx) -> None:
             info = downloader.get_info(url)
         except Exception as exc:
             error_text = str(exc)
-            if "sign in to confirm" in error_text.lower():
+            error_lower = error_text.lower()
+            if "sign in to confirm" in error_lower:
                 bot.send_message(
                     message.chat.id,
                     "⏳ Возникла техническая проблема с YouTube, "
@@ -1046,6 +1048,22 @@ def register_download_handlers(ctx) -> None:
                     message.from_user.id, message.chat.id, url, "YouTube",
                 )
                 notify_admin_cookies_expired(bot, "YouTube")
+            elif is_instagram_url(url) and (
+                "inappropriate" in error_lower
+                or "unavailable for certain audiences" in error_lower
+                or "login required" in error_lower
+            ):
+                bot.send_message(
+                    message.chat.id,
+                    "⏳ Этот контент в Instagram помечен как ограниченный "
+                    "и требует авторизации для просмотра.\n\n"
+                    "Ваш ролик будет скачан и отправлен вам "
+                    "автоматически, как только мы обновим доступ к Instagram.",
+                )
+                storage.add_pending_cookie_download(
+                    message.from_user.id, message.chat.id, url, "Instagram",
+                )
+                notify_admin_cookies_expired(bot, "Instagram")
             else:
                 error_message = f"\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443: {exc}"
                 if is_youtube_url(url):
