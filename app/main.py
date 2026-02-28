@@ -11,9 +11,12 @@ from datetime import datetime, timezone
 
 from telebot import TeleBot, apihelper, types
 
+import shutil
+
 from app.config import (
     ADMIN_IDS,
     BOT_TOKEN,
+    COOKIES_FILE,
     DATA_DIR,
     FREE_DOWNLOAD_LIMIT,
     FREE_DOWNLOAD_WINDOW_SECONDS,
@@ -238,6 +241,18 @@ def main() -> None:
 
     setup_logging()
     os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Миграция: если cookies.txt лежит в корне проекта (старый путь),
+    # а COOKIES_FILE указывает внутрь DATA_DIR — переносим файл.
+    _old_cookies = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cookies.txt")
+    if (
+        COOKIES_FILE != _old_cookies
+        and os.path.isfile(_old_cookies)
+        and not os.path.isfile(COOKIES_FILE)
+    ):
+        shutil.move(_old_cookies, COOKIES_FILE)
+        logging.info("Cookies мигрированы: %s → %s", _old_cookies, COOKIES_FILE)
+
     logging.info("Бот запускается...")
 
     # Настройка локального Telegram Bot API Server (если указан)

@@ -41,6 +41,9 @@ class DataCleanupMonitor:
                 # Не удаляем файлы логов
                 if filename.endswith(".log") or filename.endswith(".log.1"):
                     continue
+                # Не удаляем файлы cookies (cookies.txt, cookies.cleaned.txt)
+                if filename.startswith("cookies") and filename.endswith(".txt"):
+                    continue
                 path = os.path.join(root, filename)
                 try:
                     if os.path.getmtime(path) < cutoff:
