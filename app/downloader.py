@@ -565,7 +565,18 @@ class VideoDownloader:
         logging.warning("Файл cookies санитизирован и сохранён: %s", sanitized_path)
         return sanitized_path
 
-    def _base_opts(self, skip_download: bool = False) -> dict:
+    @staticmethod
+    def _is_vk_url(url: str) -> bool:
+        """Проверяет, ведёт ли URL на VK/VK Video."""
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            return False
+        host = host.lower().removeprefix("www.")
+        return host in ("vk.com", "vk.ru", "vkvideo.ru", "m.vk.com")
+
+    def _base_opts(self, skip_download: bool = False, url: str = "") -> dict:
         """Формирует базовые опции для yt-dlp."""
         output_template = os.path.join(self.data_dir, "%(id)s.%(ext)s")
         opts: dict = {
@@ -596,9 +607,9 @@ class VideoDownloader:
             # чтобы избежать webm, который Telegram не воспроизводит инлайн
             "merge_output_format": PREFERRED_VIDEO_FORMAT,
         }
-        if VK_USERNAME:
+        if VK_USERNAME and self._is_vk_url(url):
             opts["username"] = VK_USERNAME
-        if VK_PASSWORD:
+        if VK_PASSWORD and self._is_vk_url(url):
             opts["password"] = VK_PASSWORD
         # JS-рантайм для YouTube n-challenge — top-level опция yt-dlp,
         # НЕ YouTube extractor arg. Формат: {'node': {'path': '/usr/bin/node'}}.
@@ -628,7 +639,7 @@ class VideoDownloader:
 
     def get_info(self, url: str) -> dict:
         """Получает метаданные видео без скачивания."""
-        opts = self._base_opts(skip_download=True)
+        opts = self._base_opts(skip_download=True, url=url)
         # Для получения метаданных используем максимально допустимый формат,
         # чтобы не получить «Requested format is not available» на DASH-only
         # видео (YouTube Shorts и др.), где нет комбинированных форматов.
@@ -803,7 +814,7 @@ class VideoDownloader:
         progress_callback: Callable[[dict], None] | None = None,
     ) -> tuple[str, dict]:
         """Скачивает видео/аудио и возвращает (путь_к_файлу, метаданные)."""
-        ydl_opts = self._base_opts()
+        ydl_opts = self._base_opts(url=url)
         if audio_only:
             ydl_opts["format"] = "bestaudio/best"
             # Для аудио предпочитаем m4a/mp3 вместо webm/opus
@@ -854,7 +865,7 @@ class VideoDownloader:
                 logging.warning(
                     "YouTube download: retry не помог, fallback-клиенты: %s", url,
                 )
-                fallback_opts = self._base_opts()
+                fallback_opts = self._base_opts(url=url)
                 if progress_callback:
                     fallback_opts["progress_hooks"] = [progress_callback]
                 info = self._retry_with_fallback_clients(
@@ -1064,7 +1075,7 @@ class VideoDownloader:
 
     def get_latest_entry(self, channel_url: str) -> dict | None:
         """Получает последнее видео с канала (flat-извлечение)."""
-        ydl_opts = self._base_opts(skip_download=True)
+        ydl_opts = self._base_opts(skip_download=True, url=channel_url)
         ydl_opts["extract_flat"] = True
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(channel_url, download=False)
