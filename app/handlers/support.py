@@ -7,11 +7,16 @@ from app.constants import (
     EMOJI_ALERT,
     EMOJI_DONE,
     EMOJI_REPORT,
+    MENU_ADMIN,
+    MENU_CHANNEL,
+    MENU_HISTORY,
     MENU_REPORT,
     STATE_AWAITING_REPORT,
 )
 from app.keyboards import build_main_menu
 from app.utils import is_admin
+
+_MENU_BUTTONS = {MENU_ADMIN, MENU_CHANNEL, MENU_HISTORY, MENU_REPORT}
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +113,22 @@ def register_support_handlers(ctx) -> None:
     # Обращение пользователя: текст
     # ------------------------------------------------------------------
 
-    @bot.message_handler(
-        func=lambda msg: ctx.get_user_state(msg.from_user.id) == STATE_AWAITING_REPORT
-        and msg.text is not None,
-    )
+    def _check_report_text(msg) -> bool:
+        """Проверяет, что текстовое сообщение предназначено для репорта.
+
+        URL, команды и кнопки меню сбрасывают состояние и пропускаются.
+        """
+        if msg.text is None:
+            return False
+        if ctx.get_user_state(msg.from_user.id) != STATE_AWAITING_REPORT:
+            return False
+        t = msg.text.strip()
+        if t.startswith("/") or t.startswith("http") or t in _MENU_BUTTONS:
+            ctx.set_user_state(msg.from_user.id, None)
+            return False
+        return True
+
+    @bot.message_handler(func=_check_report_text)
     def handle_report_text(message):
         user_id = message.from_user.id
         try:
