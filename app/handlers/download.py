@@ -1006,6 +1006,7 @@ def register_download_handlers(ctx) -> None:
     def handle_admin_button(message: types.Message) -> None:
         """Обработчик кнопки «Админ-панель» из reply-меню."""
         ctx.ensure_user(message.from_user)
+        ctx.set_user_state(message.from_user.id, None)
         ctx.clear_last_inline(message.from_user.id, message.chat.id)
         open_tickets = storage.count_open_tickets()
         from app.keyboards import build_admin_menu

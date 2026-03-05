@@ -9,6 +9,10 @@ from telebot import types
 
 from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS, YOUTUBE_TEST_URL
 from app.constants import (
+    MENU_ADMIN,
+    MENU_CHANNEL,
+    MENU_HISTORY,
+    MENU_REPORT,
     CB_ADMIN,
     CB_ADMIN_BROADCAST,
     CB_ADMIN_INCIDENTS,
@@ -79,6 +83,58 @@ def register_admin_handlers(ctx) -> None:
     """Регистрирует все обработчики админ-панели."""
     bot = ctx.bot
     storage = ctx.storage
+
+    # ------------------------------------------------------------------
+    # Набор кнопок reply-меню: если пользователь нажимает кнопку или
+    # отправляет URL / команду — сбрасываем состояние ожидания ввода.
+    # ------------------------------------------------------------------
+    _MENU_BUTTONS = {MENU_ADMIN, MENU_CHANNEL, MENU_HISTORY, MENU_REPORT}
+
+    def _is_escape_text(text: str) -> bool:
+        """Текст не является вводом для текущего состояния ожидания."""
+        t = text.strip()
+        return t.startswith("/") or t.startswith("http") or t in _MENU_BUTTONS
+
+    def _check_state_input(m: types.Message, expected_state) -> bool:
+        """Проверяет, что сообщение предназначено для обработчика состояния.
+
+        Если текст является URL, командой или кнопкой меню —
+        сбрасывает состояние и возвращает False, чтобы сообщение
+        попало в нужный обработчик.
+        """
+        if m.text is None or not is_admin(m.from_user.id):
+            return False
+        state = ctx.get_user_state(m.from_user.id)
+        if state != expected_state:
+            return False
+        if _is_escape_text(m.text):
+            ctx.set_user_state(m.from_user.id, None)
+            return False
+        return True
+
+    def _check_state_input_tuple(m: types.Message, expected_first) -> bool:
+        """Аналог _check_state_input для состояний-кортежей (STATE_REPLYING_TICKET)."""
+        if m.text is None or not is_admin(m.from_user.id):
+            return False
+        state = ctx.get_user_state(m.from_user.id)
+        if not (isinstance(state, tuple) and len(state) == 2 and state[0] == expected_first):
+            return False
+        if _is_escape_text(m.text):
+            ctx.set_user_state(m.from_user.id, None)
+            return False
+        return True
+
+    def _check_state_input_broadcast(m: types.Message) -> bool:
+        """Проверка для рассылки (два возможных состояния)."""
+        if m.text is None or not is_admin(m.from_user.id):
+            return False
+        state = ctx.get_user_state(m.from_user.id)
+        if state not in (STATE_AWAITING_BROADCAST_ALL, STATE_AWAITING_BROADCAST_AFFECTED):
+            return False
+        if _is_escape_text(m.text):
+            ctx.set_user_state(m.from_user.id, None)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Вспомогательная функция: безопасное редактирование или отправка нового сообщения
@@ -404,11 +460,7 @@ def register_admin_handlers(ctx) -> None:
     # 14. Обработчик текста: STATE_AWAITING_LIMIT
     # ==================================================================
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and ctx.get_user_state(m.from_user.id) == STATE_AWAITING_LIMIT
-    ))
+    @bot.message_handler(func=lambda m: _check_state_input(m, STATE_AWAITING_LIMIT))
     def handle_set_limit(message: types.Message):
         user_id = message.from_user.id
         text = message.text.strip()
@@ -427,11 +479,7 @@ def register_admin_handlers(ctx) -> None:
     # 15. Обработчик текста: STATE_AWAITING_WINDOW
     # ==================================================================
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and ctx.get_user_state(m.from_user.id) == STATE_AWAITING_WINDOW
-    ))
+    @bot.message_handler(func=lambda m: _check_state_input(m, STATE_AWAITING_WINDOW))
     def handle_set_window(message: types.Message):
         user_id = message.from_user.id
         text = message.text.strip()
@@ -489,11 +537,7 @@ def register_admin_handlers(ctx) -> None:
     # 18. Обработчик текста: STATE_AWAITING_CHANNEL_ID
     # ==================================================================
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and ctx.get_user_state(m.from_user.id) == STATE_AWAITING_CHANNEL_ID
-    ))
+    @bot.message_handler(func=lambda m: _check_state_input(m, STATE_AWAITING_CHANNEL_ID))
     def handle_add_channel(message: types.Message):
         user_id = message.from_user.id
         text = message.text.strip()
@@ -692,11 +736,7 @@ def register_admin_handlers(ctx) -> None:
     # Обработчик текста: STATE_AWAITING_LOG_LINES
     # ==================================================================
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and ctx.get_user_state(m.from_user.id) == STATE_AWAITING_LOG_LINES
-    ))
+    @bot.message_handler(func=lambda m: _check_state_input(m, STATE_AWAITING_LOG_LINES))
     def handle_log_lines(message: types.Message):
         user_id = message.from_user.id
         text = message.text.strip()
@@ -979,14 +1019,7 @@ def register_admin_handlers(ctx) -> None:
             "Отправьте /cancel для отмены.",
         )
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and ctx.get_user_state(m.from_user.id) in (
-            STATE_AWAITING_BROADCAST_ALL,
-            STATE_AWAITING_BROADCAST_AFFECTED,
-        )
-    ))
+    @bot.message_handler(func=_check_state_input_broadcast)
     def handle_broadcast_text(message: types.Message):
         user_id = message.from_user.id
         state = ctx.get_user_state(user_id)
@@ -1038,13 +1071,7 @@ def register_admin_handlers(ctx) -> None:
     # Обработчик текста: STATE_REPLYING_TICKET (текстовые сообщения)
     # ==================================================================
 
-    @bot.message_handler(func=lambda m: (
-        m.text is not None
-        and is_admin(m.from_user.id)
-        and isinstance(ctx.get_user_state(m.from_user.id), tuple)
-        and len(ctx.get_user_state(m.from_user.id)) == 2
-        and ctx.get_user_state(m.from_user.id)[0] == STATE_REPLYING_TICKET
-    ))
+    @bot.message_handler(func=lambda m: _check_state_input_tuple(m, STATE_REPLYING_TICKET))
     def handle_ticket_reply_text(message: types.Message):
         user_id = message.from_user.id
         state = ctx.get_user_state(user_id)
