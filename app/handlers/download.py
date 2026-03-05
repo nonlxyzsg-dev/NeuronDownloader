@@ -64,10 +64,12 @@ from app.keyboards import (
 )
 from app.downloader import (
     _get_video_codec,
+    _get_video_rotation,
     download_preview_image,
     download_thumbnail,
     ensure_h264,
     fix_h264_sar,
+    fix_video_rotation,
 )
 from app.utils import (
     append_youtube_client_hint,
@@ -563,9 +565,43 @@ def register_download_handlers(ctx) -> None:
                 )
                 codec_ok = original_codec == "h264" if original_codec else True
                 if codec_ok and original_codec:
-                    # H.264 с кривым SAR — iPhone покажет сплющенное видео.
-                    # Быстрый фикс через bitstream filter (без перекодирования).
-                    file_path = fix_h264_sar(file_path)
+                    # Проверяем поворот: iPhone/Telegram iOS не всегда
+                    # применяют метаданные поворота — вертикальное видео
+                    # показывается сплющенным как горизонтальное.
+                    rotation = _get_video_rotation(file_path)
+                    user_device = storage.get_user_device_type(user_id)
+                    if rotation != 0 and user_device == DEVICE_IPHONE:
+                        # Впекаем поворот в пиксели (перекодирование).
+                        # Одновременно фиксит SAR на 1:1.
+                        logging.info(
+                            "Поворот %d° + iPhone: впекаем в пиксели (url=%s)",
+                            rotation, url,
+                        )
+                        if _progress_msg_id[0]:
+                            try:
+                                size_mb = (total_bytes or 0) / (1024 * 1024)
+                                est_minutes = max(1, int(size_mb * 0.6))
+                                bot.edit_message_text(
+                                    f"\U0001f504 Исправляем поворот видео для iPhone\u2026\n"
+                                    f"\u23f3 Это может занять ~{est_minutes} мин.",
+                                    chat_id, _progress_msg_id[0],
+                                )
+                            except Exception:
+                                pass
+                        reencode_start = time.monotonic()
+                        file_path, rotation_fixed = fix_video_rotation(file_path)
+                        reencode_duration = time.monotonic() - reencode_start
+                        if rotation_fixed:
+                            was_auto_reencoded = True
+                            total_bytes = get_file_size(file_path)
+                        logging.info(
+                            "Фикс поворота завершён за %.2fs (rotation=%d°, fixed=%s, url=%s)",
+                            reencode_duration, rotation, rotation_fixed, url,
+                        )
+                    else:
+                        # H.264 с кривым SAR — iPhone покажет сплющенное видео.
+                        # Быстрый фикс через bitstream filter (без перекодирования).
+                        file_path = fix_h264_sar(file_path)
                 if not codec_ok:
                     # Для iPhone/iPad автоматически перекодируем в H.264,
                     # чтобы видео не зависало на первом кадре в Telegram.

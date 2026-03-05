@@ -100,6 +100,152 @@ def _get_video_sar(file_path: str) -> str | None:
     return None
 
 
+def _get_video_rotation(file_path: str) -> int:
+    """Возвращает угол поворота видео (0, 90, 180, 270).
+
+    Проверяет display matrix (side_data) и legacy-тег rotate.
+    iPhone/Telegram iOS не всегда корректно применяют метаданные поворота
+    из контейнера — вертикальное видео отображается сплющенным.
+    """
+    # Способ 1: display matrix (side_data) — современный стандарт
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream_side_data=rotation",
+                "-of", "json",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = json.loads(result.stdout)
+        for stream in info.get("streams") or []:
+            for side_data in stream.get("side_data_list") or []:
+                rotation = side_data.get("rotation")
+                if rotation is not None:
+                    return int(float(rotation)) % 360
+    except Exception:
+        logging.debug("ffprobe side_data rotation не удался для %s", file_path)
+
+    # Способ 2: тег rotate в метаданных потока (legacy MP4)
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream_tags=rotate",
+                "-of", "json",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = json.loads(result.stdout)
+        for stream in info.get("streams") or []:
+            tags = stream.get("tags") or {}
+            rotate = tags.get("rotate")
+            if rotate is not None:
+                return int(rotate) % 360
+    except Exception:
+        logging.debug("ffprobe tag rotate не удался для %s", file_path)
+
+    return 0
+
+
+def fix_video_rotation(file_path: str) -> tuple[str, bool]:
+    """Впекает поворот видео в пиксели (с перекодированием в H.264).
+
+    iPhone/Telegram iOS не всегда корректно применяют метаданные поворота
+    из контейнера — вертикальное видео отображается сплющенным как
+    горизонтальное. Перекодирование с автоповоротом ffmpeg решает проблему:
+    ffmpeg считывает display matrix, поворачивает пиксели и убирает метаданные.
+    Одновременно фиксит SAR на 1:1.
+
+    Возвращает (путь_к_файлу, было_перекодировано).
+    """
+    rotation = _get_video_rotation(file_path)
+    if rotation == 0:
+        logging.info("Поворот 0°, пропускаем: %s", file_path)
+        return file_path, False
+
+    logging.info("Поворот %d°, впекаем в пиксели (перекодирование): %s", rotation, file_path)
+
+    base, ext = os.path.splitext(file_path)
+    output_path = f"{base}_rot{ext}"
+
+    # ffmpeg по умолчанию автоматически поворачивает видео при перекодировании
+    # (autorotate). Фильтр scale впекает SAR в реальные пиксели, setsar=1
+    # нормализует. Autorotate применяется ДО -vf фильтров, поэтому scale
+    # получает уже повёрнутые размеры — корректно для любого угла.
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c:v", "libx264",
+        "-preset", "faster",
+        "-crf", "23",
+        "-profile:v", "high",
+        "-level", "4.1",
+        "-pix_fmt", "yuv420p",
+        "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=600, check=True)
+    except subprocess.CalledProcessError:
+        logging.warning("Копирование аудио не удалось при fix_rotation, перекодируем аудио в AAC")
+        cmd_full = [
+            "ffmpeg", "-y", "-i", file_path,
+            "-c:v", "libx264",
+            "-preset", "faster",
+            "-crf", "23",
+            "-profile:v", "high",
+            "-level", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd_full, capture_output=True, timeout=600, check=True)
+        except Exception:
+            logging.exception("fix_rotation (полное перекодирование) не удалось для %s", file_path)
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return file_path, False
+    except Exception:
+        logging.exception("fix_rotation не удалось для %s", file_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path, False
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        logging.error("Файл после fix_rotation пустой: %s", output_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path, False
+
+    try:
+        os.remove(file_path)
+        os.replace(output_path, file_path)
+    except OSError:
+        logging.exception("Не удалось заменить %s после fix_rotation", file_path)
+        if os.path.exists(output_path):
+            return output_path, True
+        return file_path, False
+
+    logging.info("Поворот %d° впечён в пиксели: %s", rotation, file_path)
+    return file_path, True
+
+
 def fix_h264_sar(file_path: str) -> str:
     """Исправляет SAR на 1:1 для H.264 видео без перекодирования.
 
