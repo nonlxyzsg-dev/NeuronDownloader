@@ -65,6 +65,7 @@ from app.keyboards import (
 from app.downloader import (
     _get_video_codec,
     _get_video_rotation,
+    cleanup_video_metadata,
     download_preview_image,
     download_thumbnail,
     ensure_h264,
@@ -665,6 +666,19 @@ def register_download_handlers(ctx) -> None:
                             original_codec, url,
                         )
 
+                # iPhone: если никакой обработки не было (H.264, SAR=1:1,
+                # rotation=0), всё равно делаем лёгкую очистку метаданных —
+                # убираем rotate-тег и перемещаем moov atom (faststart).
+                # Это решает проблему сплющенного вертикального видео на iOS,
+                # когда контейнер содержит остаточные метаданные поворота.
+                if not was_auto_reencoded and not needs_reencode:
+                    user_device = storage.get_user_device_type(user_id)
+                    if user_device == DEVICE_IPHONE:
+                        logging.info(
+                            "iPhone: очистка метаданных контейнера (url=%s)", url,
+                        )
+                        file_path = cleanup_video_metadata(file_path)
+
             # Если файл слишком большой, предлагаем разделить
             if total_bytes and total_bytes > max_file_size:
                 split_token = uuid.uuid4().hex[:12]
@@ -752,6 +766,17 @@ def register_download_handlers(ctx) -> None:
             video_width, video_height = None, None
             if not audio_only:
                 video_width, video_height = get_video_dimensions(file_path)
+                # Фоллбэк: берём размеры из yt-dlp info dict
+                if video_width is None or video_height is None:
+                    yt_w = info.get("width")
+                    yt_h = info.get("height")
+                    if yt_w and yt_h:
+                        video_width = int(yt_w)
+                        video_height = int(yt_h)
+                        logging.info(
+                            "Размеры из yt-dlp info: %sx%s (url=%s)",
+                            video_width, video_height, url,
+                        )
                 logging.info(
                     "Размеры видео: %sx%s (url=%s)",
                     video_width, video_height, url,
