@@ -108,27 +108,39 @@ def get_video_dimensions(file_path: str) -> tuple[int | None, int | None]:
     может неправильно определить размеры из метаданных файла.
     """
     try:
+        # Простой вызов ffprobe — только width, height, SAR
         result = subprocess.run(
             [
                 "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,sample_aspect_ratio",
-                "-show_entries", "stream_side_data=rotation",
-                "-show_entries", "stream_tags=rotate",
                 "-of", "json",
                 file_path,
             ],
             capture_output=True, text=True, timeout=30,
         )
+        if result.returncode != 0:
+            logging.warning(
+                "ffprobe вернул код %d для %s: %s",
+                result.returncode, file_path, result.stderr[:200],
+            )
+            return None, None
+
+        if not result.stdout.strip():
+            logging.warning("ffprobe вернул пустой stdout для %s", file_path)
+            return None, None
+
         info = json.loads(result.stdout)
         streams = info.get("streams") or []
         if not streams:
+            logging.warning("ffprobe не нашёл видеопотоков в %s", file_path)
             return None, None
 
         stream = streams[0]
         width = stream.get("width")
         height = stream.get("height")
         if width is None or height is None:
+            logging.warning("ffprobe не вернул width/height для %s: %s", file_path, stream)
             return None, None
 
         width = int(width)
@@ -146,27 +158,64 @@ def get_video_dimensions(file_path: str) -> tuple[int | None, int | None]:
                 except (ValueError, ZeroDivisionError):
                     pass
 
-        # Учитываем поворот (90°/270° меняют местами width и height)
-        rotation = 0
-        for side_data in stream.get("side_data_list") or []:
-            rot = side_data.get("rotation")
-            if rot is not None:
-                rotation = abs(int(float(rot))) % 360
-                break
-        if rotation == 0:
-            tags = stream.get("tags") or {}
-            rot = tags.get("rotate")
-            if rot is not None:
-                rotation = abs(int(rot)) % 360
-
+        # Учитываем поворот через уже проверенную функцию
+        rotation = _get_video_rotation(file_path)
         if rotation in (90, 270):
             width, height = height, width
 
         return width, height
 
     except Exception:
-        logging.debug("ffprobe dimensions не удался для %s", file_path)
+        logging.exception("get_video_dimensions не удался для %s", file_path)
     return None, None
+
+
+def cleanup_video_metadata(file_path: str) -> str:
+    """Очищает метаданные видео для корректного отображения на iPhone.
+
+    Быстрая операция без перекодирования (stream copy):
+    - Убирает rotate-тег из метаданных
+    - Перемещает moov atom в начало файла (faststart)
+
+    Используется для iPhone, когда видео H.264, SAR=1:1, rotation=0,
+    но всё равно отображается сплющенным из-за остаточных метаданных
+    в контейнере.
+    """
+    base, ext = os.path.splitext(file_path)
+    output_path = f"{base}_clean{ext}"
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c", "copy",
+        "-metadata:s:v:0", "rotate=0",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+    except Exception:
+        logging.debug("cleanup_video_metadata не удался для %s", file_path)
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return file_path
+
+    try:
+        os.remove(file_path)
+        os.replace(output_path, file_path)
+    except OSError:
+        if os.path.exists(output_path):
+            return output_path
+        return file_path
+
+    return file_path
 
 
 def _get_video_rotation(file_path: str) -> int:
