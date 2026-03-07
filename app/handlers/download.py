@@ -70,6 +70,7 @@ from app.downloader import (
     ensure_h264,
     fix_h264_sar,
     fix_video_rotation,
+    get_video_dimensions,
 )
 from app.utils import (
     append_youtube_client_hint,
@@ -157,6 +158,8 @@ def register_download_handlers(ctx) -> None:
         reply_markup=None,
         source_url: str = "",
         thumbnail=None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> str | None:
         """Отправляет аудио/видео пользователю с логикой повторных попыток.
 
@@ -188,6 +191,12 @@ def register_download_handlers(ctx) -> None:
             }
             if thumbnail is not None:
                 send_kwargs["thumbnail"] = thumbnail
+            # Явно передаём width/height — Telegram iOS может неправильно
+            # определить размеры из метаданных файла, что приводит к
+            # сплющенному отображению вертикального видео.
+            if width is not None and height is not None:
+                send_kwargs["width"] = width
+                send_kwargs["height"] = height
             sent_msg = send_with_retry(
                 bot.send_video,
                 user_id,
@@ -600,8 +609,24 @@ def register_download_handlers(ctx) -> None:
                         )
                     else:
                         # H.264 с кривым SAR — iPhone покажет сплющенное видео.
-                        # Быстрый фикс через bitstream filter (без перекодирования).
-                        file_path = fix_h264_sar(file_path)
+                        # Для iPhone: полное перекодирование (впекаем SAR в пиксели).
+                        # Для Android: быстрый фикс через bitstream filter.
+                        user_device = storage.get_user_device_type(user_id)
+                        is_iphone = user_device == DEVICE_IPHONE
+                        if is_iphone and _progress_msg_id[0]:
+                            try:
+                                bot.edit_message_text(
+                                    "\U0001f504 Исправляем пропорции видео для iPhone\u2026",
+                                    chat_id, _progress_msg_id[0],
+                                )
+                            except Exception:
+                                pass
+                        file_path, sar_reencoded = fix_h264_sar(
+                            file_path, force_reencode=is_iphone,
+                        )
+                        if sar_reencoded:
+                            was_auto_reencoded = True
+                            total_bytes = get_file_size(file_path)
                 if not codec_ok:
                     # Для iPhone/iPad автоматически перекодируем в H.264,
                     # чтобы видео не зависало на первом кадре в Telegram.
@@ -721,6 +746,17 @@ def register_download_handlers(ctx) -> None:
                 if thumb_url:
                     thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
 
+            # Определяем реальные размеры видео для корректного
+            # отображения на iPhone (Telegram iOS может неправильно
+            # определить размеры из метаданных файла).
+            video_width, video_height = None, None
+            if not audio_only:
+                video_width, video_height = get_video_dimensions(file_path)
+                logging.info(
+                    "Размеры видео: %sx%s (url=%s)",
+                    video_width, video_height, url,
+                )
+
             try:
                 thumb_file = None
                 if thumb_path:
@@ -732,6 +768,8 @@ def register_download_handlers(ctx) -> None:
                         reply_markup=report_markup,
                         source_url=url,
                         thumbnail=thumb_file,
+                        width=video_width,
+                        height=video_height,
                     )
             finally:
                 if thumb_file:
@@ -1506,6 +1544,10 @@ def register_download_handlers(ctx) -> None:
             parts = downloader.split_video(file_path, split_target_size)
             total_parts = len(parts)
             video_tag = f"#nd_{uuid.uuid4().hex[:6]}" if total_parts > 1 else ""
+            # Определяем размеры первой части (все части одного видео)
+            split_width, split_height = None, None
+            if not audio_only and parts:
+                split_width, split_height = get_video_dimensions(parts[0])
             for i, part_path in enumerate(parts, 1):
                 part_title = f"{title} (\u0447\u0430\u0441\u0442\u044c {i}/{total_parts})"
                 part_size = get_file_size(part_path)
@@ -1521,6 +1563,8 @@ def register_download_handlers(ctx) -> None:
                                 video_tag=video_tag,
                                 source_url=split_url,
                                 thumbnail=split_thumb_file,
+                                width=split_width,
+                                height=split_height,
                             )
                     finally:
                         if split_thumb_file:
@@ -1741,6 +1785,7 @@ def register_download_handlers(ctx) -> None:
                 if thumb_url:
                     re_thumb_path = download_thumbnail(thumb_url, downloader.data_dir)
 
+                re_width, re_height = get_video_dimensions(file_path)
                 try:
                     re_thumb_file = None
                     if re_thumb_path:
@@ -1752,6 +1797,8 @@ def register_download_handlers(ctx) -> None:
                             file_size=total_bytes,
                             source_url=re_url,
                             thumbnail=re_thumb_file,
+                            width=re_width,
+                            height=re_height,
                         )
                 finally:
                     if re_thumb_file:

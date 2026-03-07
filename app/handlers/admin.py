@@ -73,6 +73,7 @@ from app.keyboards import (
 )
 from app.logger import get_log_file_path
 from app.utils import is_admin, format_bytes
+from app.version import BOT_VERSION, BOT_VERSION_DATE, BOT_VERSION_CHANGELOG
 
 logger = logging.getLogger(__name__)
 
@@ -217,8 +218,12 @@ def register_admin_handlers(ctx) -> None:
         ctx.clear_last_inline(user_id, message.chat.id)
         bot.send_message(
             message.chat.id,
-            "⚙️ Панель администратора",
+            f"⚙️ Панель администратора\n\n"
+            f"📦 Версия: <b>{BOT_VERSION}</b>\n"
+            f"📅 Обновление: {BOT_VERSION_DATE}\n"
+            f"📝 {BOT_VERSION_CHANGELOG}",
             reply_markup=_admin_menu_markup(),
+            parse_mode="HTML",
         )
 
     # ==================================================================
@@ -234,8 +239,12 @@ def register_admin_handlers(ctx) -> None:
         bot.answer_callback_query(call.id)
         _safe_edit(
             call.message.chat.id, call.message.message_id,
-            "⚙️ Панель администратора",
+            f"⚙️ Панель администратора\n\n"
+            f"📦 Версия: <b>{BOT_VERSION}</b>\n"
+            f"📅 Обновление: {BOT_VERSION_DATE}\n"
+            f"📝 {BOT_VERSION_CHANGELOG}",
             reply_markup=_admin_menu_markup(),
+            parse_mode="HTML",
         )
 
     # ==================================================================

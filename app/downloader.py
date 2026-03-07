@@ -100,6 +100,75 @@ def _get_video_sar(file_path: str) -> str | None:
     return None
 
 
+def get_video_dimensions(file_path: str) -> tuple[int | None, int | None]:
+    """Возвращает (width, height) видео с учётом поворота и SAR.
+
+    Использует ffprobe для получения реальных отображаемых размеров.
+    Это важно для корректного отображения на iPhone — Telegram iOS
+    может неправильно определить размеры из метаданных файла.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,sample_aspect_ratio",
+                "-show_entries", "stream_side_data=rotation",
+                "-show_entries", "stream_tags=rotate",
+                "-of", "json",
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        info = json.loads(result.stdout)
+        streams = info.get("streams") or []
+        if not streams:
+            return None, None
+
+        stream = streams[0]
+        width = stream.get("width")
+        height = stream.get("height")
+        if width is None or height is None:
+            return None, None
+
+        width = int(width)
+        height = int(height)
+
+        # Учитываем SAR (sample aspect ratio)
+        sar = stream.get("sample_aspect_ratio")
+        if sar and sar not in ("1:1", "N/A", "0:1"):
+            parts = sar.split(":")
+            if len(parts) == 2:
+                try:
+                    sar_num, sar_den = int(parts[0]), int(parts[1])
+                    if sar_den > 0:
+                        width = int(width * sar_num / sar_den)
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+        # Учитываем поворот (90°/270° меняют местами width и height)
+        rotation = 0
+        for side_data in stream.get("side_data_list") or []:
+            rot = side_data.get("rotation")
+            if rot is not None:
+                rotation = abs(int(float(rot))) % 360
+                break
+        if rotation == 0:
+            tags = stream.get("tags") or {}
+            rot = tags.get("rotate")
+            if rot is not None:
+                rotation = abs(int(rot)) % 360
+
+        if rotation in (90, 270):
+            width, height = height, width
+
+        return width, height
+
+    except Exception:
+        logging.debug("ffprobe dimensions не удался для %s", file_path)
+    return None, None
+
+
 def _get_video_rotation(file_path: str) -> int:
     """Возвращает угол поворота видео (0, 90, 180, 270).
 
@@ -246,48 +315,116 @@ def fix_video_rotation(file_path: str) -> tuple[str, bool]:
     return file_path, True
 
 
-def fix_h264_sar(file_path: str) -> str:
-    """Исправляет SAR на 1:1 для H.264 видео без перекодирования.
+def fix_h264_sar(file_path: str, force_reencode: bool = False) -> tuple[str, bool]:
+    """Исправляет SAR на 1:1 для H.264 видео.
 
-    Использует bitstream filter h264_metadata — правит SAR прямо в
-    H.264 bitstream, копируя аудио без изменений. Мгновенная операция.
-    Возвращает путь к исправленному файлу (или исходному, если SAR уже ОК).
+    По умолчанию использует bitstream filter (быстро, без перекодирования).
+    При force_reencode=True выполняет полное перекодирование с впеканием
+    SAR в пиксели — необходимо для iPhone, т.к. Telegram iOS не всегда
+    корректно применяет SAR из метаданных, и вертикальное видео
+    отображается сплющенным.
+
+    Возвращает (путь_к_файлу, было_перекодировано).
     """
     sar = _get_video_sar(file_path)
     if sar is None or sar in ("1:1", "N/A"):
         logging.info("SAR уже корректен (%s), пропускаем: %s", sar, file_path)
-        return file_path
-
-    logging.info("SAR=%s, исправляем на 1:1 (без перекодирования): %s", sar, file_path)
+        return file_path, False
 
     base, ext = os.path.splitext(file_path)
     output_path = f"{base}_sar{ext}"
-    cmd = [
-        "ffmpeg", "-y", "-i", file_path,
-        "-c", "copy",
-        "-bsf:v", "h264_metadata=sample_aspect_ratio=1/1",
-        "-movflags", "+faststart",
-        output_path,
-    ]
-    try:
-        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
-    except Exception:
-        logging.exception("Не удалось исправить SAR для %s", file_path)
+
+    if force_reencode:
+        # Полное перекодирование: впекаем SAR в реальные пиксели.
+        # iPhone/Telegram iOS не применяют SAR из контейнера корректно —
+        # вертикальное видео с SAR != 1:1 показывается сплющенным.
+        logging.info("SAR=%s, впекаем в пиксели (перекодирование для iPhone): %s", sar, file_path)
+        cmd = [
+            "ffmpeg", "-y", "-i", file_path,
+            "-c:v", "libx264",
+            "-preset", "faster",
+            "-crf", "23",
+            "-profile:v", "high",
+            "-level", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=600, check=True)
+        except subprocess.CalledProcessError:
+            logging.warning("Копирование аудио не удалось при SAR-фиксе, перекодируем аудио в AAC")
+            cmd_full = [
+                "ffmpeg", "-y", "-i", file_path,
+                "-c:v", "libx264",
+                "-preset", "faster",
+                "-crf", "23",
+                "-profile:v", "high",
+                "-level", "4.1",
+                "-pix_fmt", "yuv420p",
+                "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+            try:
+                subprocess.run(cmd_full, capture_output=True, timeout=600, check=True)
+            except Exception:
+                logging.exception("SAR-фикс (полное перекодирование) не удалось для %s", file_path)
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+                return file_path, False
+        except Exception:
+            logging.exception("SAR-фикс (перекодирование) не удалось для %s", file_path)
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return file_path, False
+    else:
+        # Быстрый фикс через bitstream filter (без перекодирования)
+        logging.info("SAR=%s, исправляем на 1:1 (без перекодирования): %s", sar, file_path)
+        cmd = [
+            "ffmpeg", "-y", "-i", file_path,
+            "-c", "copy",
+            "-bsf:v", "h264_metadata=sample_aspect_ratio=1/1",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+        except Exception:
+            logging.exception("Не удалось исправить SAR для %s", file_path)
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+            return file_path, False
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        logging.error("Файл после SAR-фикса пустой: %s", output_path)
         try:
             os.remove(output_path)
         except OSError:
             pass
-        return file_path
+        return file_path, False
 
     # Заменяем оригинал
     try:
+        os.remove(file_path)
         os.replace(output_path, file_path)
     except OSError:
         logging.exception("Не удалось заменить файл после SAR-фикса: %s", file_path)
-        return output_path
+        if os.path.exists(output_path):
+            return output_path, force_reencode
+        return file_path, False
 
-    logging.info("SAR исправлен на 1:1: %s", file_path)
-    return file_path
+    logging.info("SAR исправлен на 1:1 (reencode=%s): %s", force_reencode, file_path)
+    return file_path, force_reencode
 
 
 def ensure_h264(file_path: str) -> tuple[str, bool, str | None]:
