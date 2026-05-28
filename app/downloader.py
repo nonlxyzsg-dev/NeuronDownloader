@@ -1073,6 +1073,62 @@ class VideoDownloader:
         safe_path = self._rename_to_safe_filename(file_path, info)
         return safe_path, info
 
+    def download_carousel(
+        self,
+        url: str,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> tuple[list[dict], dict]:
+        """Скачивает все элементы карусели (Instagram sidecar) в отдельную папку.
+
+        Возвращает (media, info), где media — список словарей в порядке
+        элементов карусели: {'path', 'is_video', 'width', 'height'}.
+        Папку с файлами (общий родитель) вызывающий код обязан удалить после
+        отправки.
+        """
+        import shutil  # noqa: F401  (используется вызывающим кодом косвенно)
+        import tempfile
+
+        work_dir = tempfile.mkdtemp(prefix="carousel_", dir=self.data_dir)
+        ydl_opts = self._base_opts(url=url)
+        # Карусель — это плейлист, поэтому noplaylist выключаем, иначе yt-dlp
+        # вернёт только один элемент.
+        ydl_opts["noplaylist"] = False
+        # Один битый элемент карусели не должен валить всю загрузку.
+        ydl_opts["ignoreerrors"] = True
+        # Нумеруем файлы по порядку, чтобы сохранить очерёдность в альбоме.
+        ydl_opts["outtmpl"] = os.path.join(work_dir, "%(autonumber)03d.%(ext)s")
+        if progress_callback:
+            ydl_opts["progress_hooks"] = [progress_callback]
+
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        video_exts = {"mp4", "mov", "mkv", "webm", "m4v"}
+        photo_exts = {"jpg", "jpeg", "png", "webp", "heic"}
+        media: list[dict] = []
+        for name in sorted(os.listdir(work_dir)):
+            full = os.path.join(work_dir, name)
+            if not os.path.isfile(full):
+                continue
+            ext = os.path.splitext(name)[1].lower().lstrip(".")
+            is_video = ext in video_exts
+            is_photo = ext in photo_exts
+            if not (is_video or is_photo):
+                continue
+            width = height = None
+            if is_video:
+                try:
+                    width, height = get_video_dimensions(full)
+                except Exception:
+                    pass
+            media.append({
+                "path": full,
+                "is_video": is_video,
+                "width": width,
+                "height": height,
+            })
+        return media, (info or {})
+
     def get_direct_url(
         self,
         info: dict,
