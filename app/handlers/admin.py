@@ -7,7 +7,7 @@ import sys
 
 from telebot import types
 
-from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS, YOUTUBE_TEST_URL
+from app.config import ADMIN_IDS, COOKIES_FILE, FREE_DOWNLOAD_LIMIT, FREE_DOWNLOAD_WINDOW_SECONDS, TELEGRAM_API_SERVER_URL, YOUTUBE_TEST_URL
 from app.constants import (
     MENU_ADMIN,
     MENU_CHANNEL,
@@ -812,7 +812,23 @@ def register_admin_handlers(ctx) -> None:
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, "🔄 Перезапуск бота...")
         logger.info("Перезапуск бота запрошен администратором %s", user_id)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Бот запускается как пакет (`python -m app.main`) с абсолютными импортами,
+        # поэтому повторный запуск sys.argv (путь к main.py как скрипту) ломает
+        # `import app`. Перезапускаемся через -m с корнем проекта в PYTHONPATH.
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        env = os.environ.copy()
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            project_root + os.pathsep + existing if existing else project_root
+        )
+        os.chdir(project_root)
+        os.execve(
+            sys.executable,
+            [sys.executable, "-m", "app.main"] + sys.argv[1:],
+            env,
+        )
 
     # ==================================================================
     # ИНЦИДЕНТЫ ВОСПРОИЗВЕДЕНИЯ ВИДЕО
@@ -1209,7 +1225,15 @@ def register_admin_handlers(ctx) -> None:
         user_id = message.from_user.id
         try:
             file_info = bot.get_file(message.document.file_id)
-            downloaded = bot.download_file(file_info.file_path)
+            file_path = file_info.file_path
+            # В режиме локального Bot API Server get_file возвращает абсолютный
+            # путь к файлу на диске сервера — скачивание по HTTP даёт 404,
+            # поэтому читаем файл напрямую с диска.
+            if TELEGRAM_API_SERVER_URL and os.path.isabs(file_path) and os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    downloaded = f.read()
+            else:
+                downloaded = bot.download_file(file_path)
         except Exception as exc:
             logger.exception("Не удалось скачать файл cookies от админа %s", user_id)
             bot.send_message(message.chat.id, f"Не удалось скачать файл: {exc}")
