@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import queue
+import shutil
 import threading
 import time
 import uuid
@@ -226,6 +227,174 @@ def register_download_handlers(ctx) -> None:
             elif not audio_only and sent_msg.video:
                 file_id = sent_msg.video.file_id
         return file_id
+
+    def _send_carousel_chunk(chat_id: int, chunk: list[dict], caption: str | None) -> None:
+        """Отправляет до 10 медиа альбомом (media group). Если элемент один —
+        отправляет одиночным сообщением (Telegram-альбом требует ≥2 элементов)."""
+        handles: list = []
+        try:
+            if len(chunk) == 1:
+                m = chunk[0]
+                fh = open(m["path"], "rb")
+                handles.append(fh)
+                if m["is_video"]:
+                    kwargs = {
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                        "supports_streaming": True,
+                        "timeout": TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                    }
+                    if m["width"] and m["height"]:
+                        kwargs["width"] = m["width"]
+                        kwargs["height"] = m["height"]
+                    send_with_retry(bot.send_video, chat_id, fh, **kwargs)
+                else:
+                    send_with_retry(
+                        bot.send_photo, chat_id, fh,
+                        caption=caption, parse_mode="HTML",
+                        timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+                    )
+                return
+            inputs = []
+            for j, m in enumerate(chunk):
+                fh = open(m["path"], "rb")
+                handles.append(fh)
+                cap = caption if j == 0 else None
+                if m["is_video"]:
+                    kwargs = {
+                        "caption": cap,
+                        "parse_mode": "HTML",
+                        "supports_streaming": True,
+                    }
+                    if m["width"] and m["height"]:
+                        kwargs["width"] = m["width"]
+                        kwargs["height"] = m["height"]
+                    inputs.append(types.InputMediaVideo(fh, **kwargs))
+                else:
+                    inputs.append(
+                        types.InputMediaPhoto(fh, caption=cap, parse_mode="HTML")
+                    )
+            send_with_retry(
+                bot.send_media_group, chat_id, inputs,
+                timeout=TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
+            )
+        finally:
+            for fh in handles:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+
+    def _run_carousel(
+        user_id: int, chat_id: int, url: str, title: str, progress_id: int | None,
+    ) -> None:
+        """Скачивает карусель и отправляет её альбомами (по 10 элементов)."""
+        media, full_info = downloader.download_carousel(url)
+        work_dir = os.path.dirname(media[0]["path"]) if media else None
+        try:
+            if not media:
+                bot.send_message(
+                    chat_id,
+                    "Не удалось скачать карусель — нет доступных медиа.",
+                )
+                return
+            # Отбрасываем элементы, превышающие лимит размера Telegram.
+            sendable = []
+            skipped = 0
+            for m in media:
+                size = get_file_size(m["path"]) or 0
+                if size > max_file_size:
+                    skipped += 1
+                    continue
+                sendable.append(m)
+            if not sendable:
+                bot.send_message(
+                    chat_id,
+                    "Все элементы карусели превышают лимит размера.",
+                )
+                return
+            caption = format_caption(title, source_url=url)
+            bot.send_chat_action(chat_id, ACTION_UPLOAD_VIDEO)
+            for i in range(0, len(sendable), 10):
+                chunk = sendable[i:i + 10]
+                _send_carousel_chunk(chat_id, chunk, caption if i == 0 else None)
+            if skipped:
+                bot.send_message(
+                    chat_id,
+                    f"{EMOJI_WARNING} Пропущено элементов (слишком большие): {skipped}",
+                )
+            if progress_id:
+                try:
+                    bot.delete_message(chat_id, progress_id)
+                except Exception:
+                    pass
+            storage.log_download(
+                user_id,
+                (full_info or {}).get("extractor_key", "Instagram"),
+                STATUS_SUCCESS, url=url, title=title, audio_only=False,
+            )
+            logging.info(
+                "Карусель отправлена: user=%s url=%s элементов=%d",
+                user_id, url, len(sendable),
+            )
+        finally:
+            if work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _handle_carousel(
+        message: types.Message,
+        url: str,
+        info: dict,
+        subscribed: bool,
+        reaction_message_id: int | None,
+    ) -> None:
+        """Точка входа обработки карусели Instagram: дедуп, очередь, прогресс."""
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        title = info.get("title") or info.get("description") or "Instagram"
+
+        if not active_downloads.try_acquire(url):
+            bot.send_message(
+                chat_id,
+                "Этот контент уже скачивается. Дождитесь завершения.",
+            )
+            return
+
+        if reaction_message_id:
+            try:
+                bot.delete_message(chat_id, reaction_message_id)
+            except Exception:
+                pass
+        if not subscribed:
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            storage.log_free_download(user_id, now_ts)
+
+        progress_id = None
+        try:
+            progress_msg = bot.send_message(
+                chat_id, f"{EMOJI_HOURGLASS} Скачиваю карусель…",
+            )
+            progress_id = progress_msg.message_id
+        except Exception:
+            pass
+
+        def _job() -> None:
+            try:
+                _run_carousel(user_id, chat_id, url, title, progress_id)
+            except Exception as exc:
+                logging.exception("Ошибка скачивания карусели %s", url)
+                try:
+                    bot.send_message(chat_id, f"Ошибка загрузки карусели: {exc}")
+                except Exception:
+                    pass
+            finally:
+                active_downloads.release(url)
+
+        try:
+            download_manager.submit_user(user_id, _job)
+        except queue.Full:
+            active_downloads.release(url)
+            bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
 
     def queue_download(
         user_id: int,
@@ -1232,6 +1401,17 @@ def register_download_handlers(ctx) -> None:
                     error_message = append_youtube_client_hint(error_message)
                 bot.send_message(message.chat.id, error_message)
             return
+
+        # \u041a\u0430\u0440\u0443\u0441\u0435\u043b\u044c Instagram (\u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u0435\u0434\u0438\u0430 \u0432 \u043e\u0434\u043d\u043e\u043c /p/ \u043f\u043e\u0441\u0442\u0435): yt-dlp
+        # \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 \u043f\u043b\u0435\u0439\u043b\u0438\u0441\u0442 \u0441 entries, \u0430 \u0444\u043e\u0440\u043c\u0430\u0442\u044b \u043b\u0435\u0436\u0430\u0442 \u0432\u043d\u0443\u0442\u0440\u0438 \u043a\u0430\u0436\u0434\u043e\u0433\u043e
+        # \u044d\u043b\u0435\u043c\u0435\u043d\u0442\u0430. \u041e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u043c \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u044b\u043c \u043f\u0443\u0442\u0451\u043c \u0438 \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u043c \u0430\u043b\u044c\u0431\u043e\u043c\u043e\u043c.
+        # \u041e\u0433\u0440\u0430\u043d\u0438\u0447\u0438\u0432\u0430\u0435\u043c Instagram'\u043e\u043c, \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u043f\u0435\u0440\u0435\u0445\u0432\u0430\u0442\u044b\u0432\u0430\u0442\u044c \u043f\u043b\u0435\u0439\u043b\u0438\u0441\u0442\u044b YouTube.
+        if is_instagram_url(url) and (
+            info.get("_type") == "playlist" or info.get("entries")
+        ):
+            _handle_carousel(message, url, info, subscribed, reaction_message_id)
+            return
+
         title = info.get("title") or "\u0412\u0438\u0434\u0435\u043e"
         channel_url = info.get("channel_url") or info.get("uploader_url")
         token = storage.create_request(
