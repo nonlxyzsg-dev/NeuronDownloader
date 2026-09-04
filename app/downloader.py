@@ -34,6 +34,25 @@ _YOUTUBE_RETRY_CLIENT_SETS: list[list[str]] = [
 ]
 
 
+def compute_download_deadline(
+    download_started: float,
+    total_bytes: int | float | None,
+    floor_seconds: int,
+    ceiling_seconds: int,
+    min_speed_bps: int,
+) -> float:
+    """Абсолютный дедлайн скачивания: пол floor_seconds, при известном
+    размере — max(пол, размер/скорость), потолок ceiling_seconds.
+    """
+    if total_bytes:
+        seconds = min(
+            ceiling_seconds,
+            max(floor_seconds, total_bytes / min_speed_bps),
+        )
+        return download_started + seconds
+    return download_started + floor_seconds
+
+
 def _is_youtube_format_error(exc: Exception) -> bool:
     """Ошибка «Requested format is not available» от YouTube."""
     error_lower = str(exc).lower()

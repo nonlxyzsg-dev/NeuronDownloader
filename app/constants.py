@@ -17,6 +17,13 @@ UPLOAD_RETRY_DELAYS = (2, 5, 10)  # секунды между попытками
 
 # --- Таймаут скачивания (секунды) ---
 DOWNLOAD_TIMEOUT_SECONDS = 600  # 10 минут
+DOWNLOAD_MAX_TIMEOUT_SECONDS = 7200
+DOWNLOAD_TIMEOUT_MIN_SPEED_BPS = 256_000
+DOWNLOAD_RETRY_DELAY_SECONDS = 60
+
+# --- Упавшие загрузки ---
+FAILED_DOWNLOADS_WINDOW_DAYS = 7
+FAILED_DOWNLOADS_PER_PAGE = 8
 
 # --- TTL кэша подписок (секунды) ---
 MEMBERSHIP_CACHE_TTL = 300  # 5 минут
@@ -82,6 +89,10 @@ CB_ADMIN_CHANNELS = "adm_ch"
 CB_ADMIN_CHANNEL_ADD = "adm_cha"
 CB_ADMIN_CHANNEL_DEL = "adm_chd"
 CB_ADMIN_LOGS = "adm_log"
+CB_ADMIN_RETRY = "adm_rtry"
+CB_ADMIN_RETRY_PAGE = "adm_rtrp"
+CB_ADMIN_RETRY_ONE = "adm_rt1"
+CB_ADMIN_RETRY_ALL = "adm_rta"
 
 # Обращения (тикеты поддержки)
 CB_TICKET_VIEW = "tik_v"
@@ -170,6 +181,7 @@ EMOJI_LOGS = "\U0001f4cb"       # 📋
 EMOJI_INCIDENT = "\U0001f6a7"   # 🚧
 EMOJI_HISTORY = "\U0001f4c2"    # 📂
 EMOJI_LINK = "\U0001f517"       # 🔗
+EMOJI_RETRY = "\U0001f501"      # 🔁
 
 # --- Типы действий в чате ---
 ACTION_UPLOAD_VIDEO = "upload_video"
@@ -179,6 +191,9 @@ ACTION_TYPING = "typing"
 # --- Статусы загрузки ---
 STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
+STATUS_RETRYING = "retrying"
+STATUS_DONE = "done"
+STATUS_DISMISSED = "dismissed"
 
 # --- Идентификаторы форматов ---
 FORMAT_BEST = "best"

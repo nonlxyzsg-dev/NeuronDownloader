@@ -3,6 +3,8 @@ import shutil
 
 from dotenv import load_dotenv
 
+from app import constants
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -32,6 +34,9 @@ REQUIRED_CHAT_IDS = [
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "2"))
 MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "20"))
 MAX_ACTIVE_TASKS_PER_USER = int(os.getenv("MAX_ACTIVE_TASKS_PER_USER", "1"))
+DOWNLOAD_TIMEOUT_SECONDS = int(
+    os.getenv("DOWNLOAD_TIMEOUT_SECONDS", str(constants.DOWNLOAD_TIMEOUT_SECONDS))
+)
 FREE_DOWNLOAD_LIMIT = int(os.getenv("FREE_DOWNLOAD_LIMIT", "5"))
 FREE_DOWNLOAD_WINDOW_SECONDS = int(os.getenv("FREE_DOWNLOAD_WINDOW_SECONDS", "86400"))
 TELEGRAM_UPLOAD_TIMEOUT_SECONDS = int(
