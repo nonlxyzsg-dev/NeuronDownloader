@@ -17,8 +17,10 @@ tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
 
 OLD_VER=$($YTDLP --version 2>/dev/null)
 
-# Обновляемся до свежего стабильного релиза с PyPI
-$PIP install -U yt-dlp >> "$LOG" 2>&1
+# Обновляемся до свежего стабильного релиза с PyPI.
+# [default] обязателен: тянет yt-dlp-ejs строго той версии, что требует новый yt-dlp
+# (рассинхрон ejs молча ломает решение JS-челленджа YouTube).
+$PIP install -U "yt-dlp[default]" >> "$LOG" 2>&1
 
 NEW_VER=$($YTDLP --version 2>/dev/null)
 
@@ -40,7 +42,7 @@ if [ "$SMOKE_OK" -eq 1 ]; then
     echo "$(date): OK — смоук прошёл, бот перезапущен на yt-dlp $NEW_VER." >> "$LOG"
 else
     echo "$(date): FAIL — смоук не прошёл, откатываемся на yt-dlp $OLD_VER..." >> "$LOG"
-    $PIP install "yt-dlp==$OLD_VER" >> "$LOG" 2>&1
+    $PIP install "yt-dlp[default]==$OLD_VER" >> "$LOG" 2>&1
     systemctl restart neuron_bot
     echo "$(date): Откат на $($YTDLP --version 2>/dev/null) выполнен, бот перезапущен." >> "$LOG"
 fi
