@@ -20,6 +20,10 @@ from app.constants import (
     CB_ADMIN_HISTORY,
     CB_ADMIN_INCIDENTS,
     CB_ADMIN_LOGS,
+    CB_ADMIN_RETRY,
+    CB_ADMIN_RETRY_ALL,
+    CB_ADMIN_RETRY_ONE,
+    CB_ADMIN_RETRY_PAGE,
     CB_ADMIN_RESTART,
     CB_ADMIN_RESTART_CONFIRM,
     CB_ADMIN_SETTINGS,
@@ -67,6 +71,7 @@ from app.constants import (
     EMOJI_HISTORY,
     EMOJI_INCIDENT,
     EMOJI_LOGS,
+    EMOJI_RETRY,
     EMOJI_RESTART,
     EMOJI_SETTINGS,
     EMOJI_STATS,
@@ -85,6 +90,7 @@ from app.constants import (
     MENU_CHANNEL,
     MENU_HISTORY,
     MENU_REPORT,
+    STATUS_RETRYING,
     TELEGRAM_CALLBACK_DATA_MAX_BYTES,
     TELEGRAM_MAX_BUTTONS_PER_KEYBOARD,
 )
@@ -202,7 +208,11 @@ def build_split_confirm_keyboard(token: str) -> types.InlineKeyboardMarkup:
 # --- Клавиатуры админ-панели ---
 
 
-def build_admin_menu(open_tickets: int = 0, open_incidents: int = 0) -> types.InlineKeyboardMarkup:
+def build_admin_menu(
+    open_tickets: int = 0,
+    open_incidents: int = 0,
+    failed_recent: int = 0,
+) -> types.InlineKeyboardMarkup:
     """Строит главное меню админ-панели."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     tickets_label = f"{EMOJI_TICKETS} Обращения"
@@ -222,6 +232,12 @@ def build_admin_menu(open_tickets: int = 0, open_incidents: int = 0) -> types.In
     markup.row(
         types.InlineKeyboardButton(text=incidents_label, callback_data=CB_ADMIN_INCIDENTS),
         types.InlineKeyboardButton(text=f"{EMOJI_HISTORY} История загрузок", callback_data=CB_ADMIN_HISTORY),
+    )
+    retry_label = f"{EMOJI_RETRY} Перекачка"
+    if failed_recent > 0:
+        retry_label += f" ({failed_recent})"
+    markup.row(
+        types.InlineKeyboardButton(text=retry_label, callback_data=CB_ADMIN_RETRY),
     )
     markup.row(
         types.InlineKeyboardButton(text=f"{EMOJI_LOGS} Логи", callback_data=CB_ADMIN_LOGS),
@@ -299,6 +315,50 @@ def build_admin_users_page(
     if nav:
         markup.row(*nav)
     markup.row(types.InlineKeyboardButton(text=f"{EMOJI_BACK} \u041d\u0430\u0437\u0430\u0434", callback_data=CB_ADMIN_BACK))
+    return markup
+
+
+def build_admin_retry_page(
+    records: list[tuple],
+    page: int,
+    total_pages: int,
+    users_map: dict[int, str],
+) -> types.InlineKeyboardMarkup:
+    """Строит страницу упавших загрузок с пагинацией."""
+    markup = types.InlineKeyboardMarkup()
+    for record in records:
+        record_id = record[0]
+        user_id = record[1]
+        error_class = record[10]
+        status = record[12]
+        created_at = record[14]
+        user = users_map.get(user_id, str(user_id))
+        date_part = created_at[:10]
+        icon = "⏳" if status == STATUS_RETRYING else "❌"
+        markup.add(types.InlineKeyboardButton(
+            text=f"{icon} #{record_id} @{user} • {error_class} • {date_part}",
+            callback_data=f"{CB_ADMIN_RETRY_ONE}|{record_id}|{page}",
+        ))
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(
+            text="⬅️", callback_data=f"{CB_ADMIN_RETRY_PAGE}|{page - 1}",
+        ))
+    nav.append(types.InlineKeyboardButton(
+        text=f"{page + 1}/{total_pages}", callback_data="noop",
+    ))
+    if page < total_pages - 1:
+        nav.append(types.InlineKeyboardButton(
+            text="➡️", callback_data=f"{CB_ADMIN_RETRY_PAGE}|{page + 1}",
+        ))
+    markup.row(*nav)
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_RETRY} Перекачать все за 7 дней",
+        callback_data=CB_ADMIN_RETRY_ALL,
+    ))
+    markup.row(types.InlineKeyboardButton(
+        text=f"{EMOJI_BACK} Назад", callback_data=CB_ADMIN_BACK,
+    ))
     return markup
 
 

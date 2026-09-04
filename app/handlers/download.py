@@ -9,12 +9,13 @@ import shutil
 import threading
 import time
 import uuid
-
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from telebot import types
 
 from app.config import (
+    DOWNLOAD_TIMEOUT_SECONDS,
     ENABLE_REACTIONS,
     TELEGRAM_API_SERVER_URL,
     TELEGRAM_UPLOAD_TIMEOUT_SECONDS,
@@ -34,13 +35,17 @@ from app.constants import (
     CB_VIDEO_REPORT,
     DEVICE_ANDROID,
     DEVICE_IPHONE,
-    DOWNLOAD_TIMEOUT_SECONDS,
+    DOWNLOAD_MAX_TIMEOUT_SECONDS,
+    DOWNLOAD_RETRY_DELAY_SECONDS,
+    DOWNLOAD_TIMEOUT_MIN_SPEED_BPS,
     EMOJI_DOWNLOAD,
     EMOJI_DONE,
     EMOJI_ERROR,
     EMOJI_HOURGLASS,
+    EMOJI_RETRY,
     EMOJI_WARNING,
     EMOJI_ZAP,
+    FAILED_DOWNLOADS_WINDOW_DAYS,
     FORMAT_AUDIO,
     FORMAT_BEST,
     CHANNEL_LINK,
@@ -54,6 +59,7 @@ from app.constants import (
     TELEGRAM_MAX_FILE_SIZE,
     TELEGRAM_SPLIT_TARGET_SIZE,
 )
+from app.download_errors import classify_download_error, is_auto_retryable
 from app.keyboards import (
     build_channel_buttons,
     build_device_selection,
@@ -67,6 +73,7 @@ from app.downloader import (
     _get_video_codec,
     _get_video_rotation,
     cleanup_video_metadata,
+    compute_download_deadline,
     download_preview_image,
     download_thumbnail,
     ensure_h264,
@@ -287,7 +294,8 @@ def register_download_handlers(ctx) -> None:
 
     def _run_carousel(
         user_id: int, chat_id: int, url: str, title: str, progress_id: int | None,
-    ) -> None:
+        delivery_note: str = "",
+    ) -> bool:
         """Скачивает карусель и отправляет её альбомами (по 10 элементов)."""
         media, full_info = downloader.download_carousel(url)
         work_dir = os.path.dirname(media[0]["path"]) if media else None
@@ -297,7 +305,7 @@ def register_download_handlers(ctx) -> None:
                     chat_id,
                     "Не удалось скачать карусель — нет доступных медиа.",
                 )
-                return
+                return False
             # Отбрасываем элементы, превышающие лимит размера Telegram.
             sendable = []
             skipped = 0
@@ -312,8 +320,8 @@ def register_download_handlers(ctx) -> None:
                     chat_id,
                     "Все элементы карусели превышают лимит размера.",
                 )
-                return
-            caption = format_caption(title, source_url=url)
+                return False
+            caption = format_caption(title, video_tag=delivery_note, source_url=url)
             bot.send_chat_action(chat_id, ACTION_UPLOAD_VIDEO)
             for i in range(0, len(sendable), 10):
                 chunk = sendable[i:i + 10]
@@ -328,15 +336,29 @@ def register_download_handlers(ctx) -> None:
                     bot.delete_message(chat_id, progress_id)
                 except Exception:
                     pass
-            storage.log_download(
-                user_id,
-                (full_info or {}).get("extractor_key", "Instagram"),
-                STATUS_SUCCESS, url=url, title=title, audio_only=False,
-            )
+            try:
+                storage.log_download(
+                    user_id,
+                    (full_info or {}).get("extractor_key", "Instagram"),
+                    STATUS_SUCCESS, url=url, title=title, audio_only=False,
+                )
+            except Exception:
+                logging.exception("Не удалось записать успешную загрузку в журнал")
+            try:
+                closed_count = storage.mark_failed_downloads_done_for_url(user_id, url)
+                if closed_count > 0:
+                    logging.info(
+                        "Закрыто записей об упавших после успешной "
+                        "загрузки карусели: %d (user=%s, url=%s)",
+                        closed_count, user_id, url,
+                    )
+            except Exception:
+                logging.exception("Не удалось закрыть записи о карусели")
             logging.info(
                 "Карусель отправлена: user=%s url=%s элементов=%d",
                 user_id, url, len(sendable),
             )
+            return True
         finally:
             if work_dir:
                 shutil.rmtree(work_dir, ignore_errors=True)
@@ -383,6 +405,19 @@ def register_download_handlers(ctx) -> None:
                 _run_carousel(user_id, chat_id, url, title, progress_id)
             except Exception as exc:
                 logging.exception("Ошибка скачивания карусели %s", url)
+                storage.record_failed_download(
+                    user_id,
+                    chat_id,
+                    url,
+                    format_id=None,
+                    format_label="",
+                    audio_only=False,
+                    is_carousel=True,
+                    platform="Instagram",
+                    title=title,
+                    error_class="site",
+                    error_text=str(exc)[:500],
+                )
                 try:
                     bot.send_message(chat_id, f"Ошибка загрузки карусели: {exc}")
                 except Exception:
@@ -396,6 +431,51 @@ def register_download_handlers(ctx) -> None:
             active_downloads.release(url)
             bot.send_message(chat_id, "Очередь переполнена. Попробуйте позже.")
 
+    def _finalize_download_success(
+        retry_of: int | None, user_id: int, url: str,
+    ) -> None:
+        if retry_of:
+            storage.mark_failed_download_done(retry_of)
+        closed_count = storage.mark_failed_downloads_done_for_url(user_id, url)
+        if closed_count > 0:
+            logging.info(
+                "Закрыто записей об упавших после успешной загрузки: %d "
+                "(user=%s, url=%s)",
+                closed_count, user_id, url,
+            )
+
+    def _revert_retry(retry_of: int | None, reason: str) -> None:
+        if retry_of:
+            storage.mark_failed_download_failed(retry_of, error_text=reason)
+            logging.warning("Ретрай #%s не запущен: %s", retry_of, reason)
+
+    def _schedule_auto_retry(record_id: int) -> None:
+        timer = threading.Timer(
+            DOWNLOAD_RETRY_DELAY_SECONDS, _run_auto_retry, args=(record_id,),
+        )
+        timer.daemon = True
+        timer.start()
+        logging.info(
+            "Запланирован авторетрай #%d через %dс",
+            record_id, DOWNLOAD_RETRY_DELAY_SECONDS,
+        )
+
+    def _run_auto_retry(record_id: int) -> None:
+        if ctx.shutdown_requested:
+            return
+        record = storage.get_failed_download(record_id)
+        if (
+            not record
+            or record[12] != STATUS_FAILED
+            or record[13] != 0
+            or not is_auto_retryable(record[10])
+        ):
+            return
+        if download_manager.queued_count() >= download_manager.max_queue_size():
+            logging.warning("Авторетрай #%d отложен: очередь переполнена", record_id)
+            return
+        _retry_failed_record(record_id)
+
     def queue_download(
         user_id: int,
         chat_id: int,
@@ -405,9 +485,41 @@ def register_download_handlers(ctx) -> None:
         status_message_id: int | None = None,
         audio_only: bool = False,
         reaction_message_id: int | None = None,
+        retry_of: int | None = None,
+        delivery_note: str = "",
     ) -> None:
         """Запускает подготовку + скачивание. Подготовка — в фоновом потоке,
         собственно скачивание — в очереди download_manager."""
+
+        def _record_download_failure(
+            retry_of: int | None,
+            exc: Exception,
+            *,
+            platform: str = "unknown",
+        ) -> None:
+            """Сохраняет провал загрузки и планирует авторетрай."""
+            error_class = classify_download_error(exc, url)
+            if retry_of:
+                storage.mark_failed_download_failed(
+                    retry_of, error_class, str(exc)[:500],
+                )
+                return
+            record_id = storage.record_failed_download(
+                user_id,
+                chat_id,
+                url,
+                format_id=selected_format,
+                format_label=(
+                    selected_format or ("audio" if audio_only else "best")
+                ),
+                audio_only=audio_only,
+                platform=platform,
+                title=title,
+                error_class=error_class,
+                error_text=str(exc)[:500],
+            )
+            if record_id and is_auto_retryable(error_class):
+                _schedule_auto_retry(record_id)
 
         def _prepare() -> None:
             """Фоновый поток: кэш, прямая ссылка. Если не удалось —
@@ -418,36 +530,41 @@ def register_download_handlers(ctx) -> None:
                 logging.exception("Ошибка подготовки загрузки %s", url)
 
         def _do_prepare() -> None:
-            if storage.is_blocked(user_id):
-                return
-            if ctx.shutdown_requested:
-                logging.info("Загрузка пропущена из-за завершения работы")
-                return
-
-            # Удаляем сообщение об очереди
-            ctx.remove_queue_message(user_id)
-
-            # Дедупликация: пропускаем, если тот же URL уже скачивается
-            if not active_downloads.try_acquire(url):
-                bot.send_message(
-                    chat_id,
-                    "Это видео уже скачивается. Дождитесь завершения.",
-                )
-                return
-
             username = ""
-            try:
-                user_row = storage.get_user(user_id)
-                if user_row:
-                    username = user_row[1] or user_row[2] or ""
-            except Exception:
-                pass
-
             progress_message_id: int | None = status_message_id
             started = time.monotonic()
             submitted_to_queue = False
+            acquired_url = False
 
             try:
+                if storage.is_blocked(user_id):
+                    _revert_retry(retry_of, "пользователь заблокирован")
+                    return
+                if ctx.shutdown_requested:
+                    logging.info("Загрузка пропущена из-за завершения работы")
+                    _revert_retry(retry_of, "завершение работы")
+                    return
+
+                # Удаляем сообщение об очереди
+                ctx.remove_queue_message(user_id)
+
+                # Дедупликация: пропускаем, если тот же URL уже скачивается
+                if not active_downloads.try_acquire(url):
+                    bot.send_message(
+                        chat_id,
+                        "Это видео уже скачивается. Дождитесь завершения.",
+                    )
+                    _revert_retry(retry_of, "эта ссылка уже скачивается")
+                    return
+                acquired_url = True
+
+                try:
+                    user_row = storage.get_user(user_id)
+                    if user_row:
+                        username = user_row[1] or user_row[2] or ""
+                except Exception:
+                    pass
+
                 logging.info(
                     "Подготовка загрузки: user=%s url=%s format=%s audio=%s",
                     user_id, url, selected_format or "best", audio_only,
@@ -489,19 +606,25 @@ def register_download_handlers(ctx) -> None:
                     try:
                         _send_media(
                             user_id, chat_id, cached_file_id, title,
-                            audio_only, source_url=url,
+                            audio_only, video_tag=delivery_note, source_url=url,
                         )
                         if progress_message_id:
                             try:
                                 bot.delete_message(chat_id, progress_message_id)
                             except Exception:
                                 pass
-                        storage.log_download(
-                            user_id, "cache", STATUS_SUCCESS,
-                            url=url, title=title,
-                            telegram_file_id=cached_file_id,
-                            audio_only=audio_only,
-                        )
+                        try:
+                            storage.log_download(
+                                user_id, "cache", STATUS_SUCCESS,
+                                url=url, title=title,
+                                telegram_file_id=cached_file_id,
+                                audio_only=audio_only,
+                            )
+                        except Exception:
+                            logging.exception(
+                                "Не удалось записать успешную загрузку в журнал"
+                            )
+                        _finalize_download_success(retry_of, user_id, url)
                         return
                     except Exception:
                         logging.warning(
@@ -566,6 +689,7 @@ def register_download_handlers(ctx) -> None:
                             sent_file_id_direct = _send_media(
                                 user_id, chat_id, direct_url, title,
                                 audio_only, file_size=direct_size,
+                                video_tag=delivery_note,
                                 source_url=url,
                             )
                             if progress_message_id:
@@ -573,14 +697,20 @@ def register_download_handlers(ctx) -> None:
                                     bot.delete_message(chat_id, progress_message_id)
                                 except Exception:
                                     pass
-                            storage.log_download(
-                                user_id,
-                                (direct_info or {}).get("extractor_key", "unknown"),
-                                STATUS_SUCCESS,
-                                url=url, title=title,
-                                telegram_file_id=sent_file_id_direct or "",
-                                audio_only=audio_only,
-                            )
+                            try:
+                                storage.log_download(
+                                    user_id,
+                                    (direct_info or {}).get("extractor_key", "unknown"),
+                                    STATUS_SUCCESS,
+                                    url=url, title=title,
+                                    telegram_file_id=sent_file_id_direct or "",
+                                    audio_only=audio_only,
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "Не удалось записать успешную загрузку в журнал"
+                                )
+                            _finalize_download_success(retry_of, user_id, url)
                             return
                         except Exception:
                             logging.exception(
@@ -601,16 +731,25 @@ def register_download_handlers(ctx) -> None:
                     _do_download(
                         user_id, chat_id, url, selected_format, title,
                         audio_only, username, _final_progress_id,
+                        retry_of, delivery_note, _record_download_failure,
                     )
 
                 try:
                     download_manager.submit_user(user_id, _download_job)
                     submitted_to_queue = True
                 except queue.Full:
-                    bot.send_message(chat_id, "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.")
+                    if not retry_of:
+                        bot.send_message(
+                            chat_id,
+                            "\u041e\u0447\u0435\u0440\u0435\u0434\u044c \u043f\u0435\u0440\u0435\u043f\u043e\u043b\u043d\u0435\u043d\u0430. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u043f\u043e\u0437\u0436\u0435.",
+                        )
+                    _revert_retry(retry_of, "очередь переполнена")
                     return
 
             except Exception as exc:
+                _record_download_failure(
+                    retry_of, exc,
+                )
                 storage.log_download(
                     user_id, "unknown", STATUS_FAILED,
                     url=url, title=title, audio_only=audio_only,
@@ -635,13 +774,10 @@ def register_download_handlers(ctx) -> None:
             finally:
                 # active_downloads освобождаем, только если НЕ поставили
                 # задачу в очередь (иначе освободит _do_download в finally)
-                if not submitted_to_queue:
+                if acquired_url and not submitted_to_queue:
                     active_downloads.release(url)
 
         threading.Thread(target=_prepare, daemon=True).start()
-
-    # Открываем queue_download для вызова из других модулей (напр. admin.py)
-    ctx.queue_download = queue_download
 
     def _do_download(
         user_id: int,
@@ -652,6 +788,9 @@ def register_download_handlers(ctx) -> None:
         audio_only: bool,
         username: str,
         progress_message_id: int | None,
+        retry_of: int | None,
+        delivery_note: str,
+        record_download_failure: Callable[..., None],
     ) -> None:
         """Выполняется в воркер-потоке очереди. Только скачивание + отправка."""
         download_started = time.monotonic()
@@ -659,20 +798,47 @@ def register_download_handlers(ctx) -> None:
         last_text = [""]
         logged_missing_total = [False]
         _progress_msg_id = [progress_message_id]
+        download_deadline = [download_started + DOWNLOAD_TIMEOUT_SECONDS]
+        max_total_seen = [0]
 
         def progress_hook(data: dict) -> None:
             if ctx.shutdown_requested:
                 raise KeyboardInterrupt("Загрузка прервана из-за завершения работы")
-            if time.monotonic() - download_started > DOWNLOAD_TIMEOUT_SECONDS:
-                raise TimeoutError(
-                    f"Загрузка превысила таймаут {DOWNLOAD_TIMEOUT_SECONDS}с"
-                )
-            if not _progress_msg_id[0]:
-                return
             if data.get("status") != "downloading":
                 return
             downloaded = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
+            if total and total > max_total_seen[0]:
+                max_total_seen[0] = total
+                deadline = compute_download_deadline(
+                    download_started,
+                    total,
+                    DOWNLOAD_TIMEOUT_SECONDS,
+                    DOWNLOAD_MAX_TIMEOUT_SECONDS,
+                    DOWNLOAD_TIMEOUT_MIN_SPEED_BPS,
+                )
+                download_deadline[0] = max(download_deadline[0], deadline)
+            now = time.monotonic()
+            if now > download_deadline[0]:
+                elapsed = now - download_started
+                speed = data.get("speed")
+                total_text = (
+                    format_bytes(max_total_seen[0])
+                    if max_total_seen[0]
+                    else "неизвестно"
+                )
+                logging.error(
+                    "Таймаут загрузки: url=%s user=%s elapsed=%dс скачано=%s "
+                    "из %s скорость=%s",
+                    url, user_id, int(elapsed), format_bytes(downloaded),
+                    total_text, format_speed(speed),
+                )
+                raise TimeoutError(
+                    f"Загрузка превысила таймаут {int(elapsed)}с "
+                    f"(скачано {format_bytes(downloaded)} из {total_text})"
+                )
+            if not _progress_msg_id[0]:
+                return
             speed = data.get("speed")
             eta = data.get("eta")
             if total:
@@ -697,7 +863,6 @@ def register_download_handlers(ctx) -> None:
                     logged_missing_total[0] = True
             if eta is not None:
                 text = f"{text} • ETA {int(eta)}s"
-            now = time.monotonic()
             if now - last_update[0] < 1:
                 return
             if text == last_text[0]:
@@ -882,10 +1047,16 @@ def register_download_handlers(ctx) -> None:
                         chat_id, split_text,
                         reply_markup=build_split_confirm_keyboard(split_token),
                     )
-                storage.log_download(
-                    user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
-                    url=url, title=title, audio_only=audio_only,
-                )
+                try:
+                    storage.log_download(
+                        user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                        url=url, title=title, audio_only=audio_only,
+                    )
+                except Exception:
+                    logging.exception(
+                        "Не удалось записать успешную загрузку в журнал"
+                    )
+                _finalize_download_success(retry_of, user_id, url)
                 return
 
             if _progress_msg_id[0]:
@@ -959,6 +1130,7 @@ def register_download_handlers(ctx) -> None:
                     sent_file_id = _send_media(
                         user_id, chat_id, handle, title,
                         audio_only, file_size=total_bytes,
+                        video_tag=delivery_note,
                         reply_markup=report_markup,
                         source_url=url,
                         thumbnail=thumb_file,
@@ -1007,14 +1179,21 @@ def register_download_handlers(ctx) -> None:
                     bot.delete_message(chat_id, _progress_msg_id[0])
                 except Exception:
                     pass
-            storage.log_download(
-                user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
-                url=url, title=title,
-                telegram_file_id=sent_file_id or "",
-                audio_only=audio_only,
-            )
+            try:
+                storage.log_download(
+                    user_id, info.get("extractor_key", "unknown"), STATUS_SUCCESS,
+                    url=url, title=title,
+                    telegram_file_id=sent_file_id or "",
+                    audio_only=audio_only,
+                )
+            except Exception:
+                logging.exception(
+                    "Не удалось записать успешную загрузку в журнал"
+                )
+            _finalize_download_success(retry_of, user_id, url)
 
         except TimeoutError as exc:
+            record_download_failure(retry_of, exc)
             storage.log_download(
                 user_id, "unknown", STATUS_FAILED,
                 url=url, title=title, audio_only=audio_only,
@@ -1040,6 +1219,7 @@ def register_download_handlers(ctx) -> None:
                 or "locked behind the login page" in error_lower
                 or "checkpoint required" in error_lower
             ):
+                record_download_failure(retry_of, exc, platform="Instagram")
                 if _progress_msg_id[0]:
                     try:
                         bot.edit_message_text(
@@ -1067,6 +1247,7 @@ def register_download_handlers(ctx) -> None:
                     url=url, title=title, audio_only=audio_only,
                 )
             else:
+                record_download_failure(retry_of, exc)
                 storage.log_download(
                     user_id, "unknown", STATUS_FAILED,
                     url=url, title=title, audio_only=audio_only,
@@ -1090,6 +1271,92 @@ def register_download_handlers(ctx) -> None:
                         pass
         finally:
             active_downloads.release(url)
+
+    def _retry_failed_record(record_id: int) -> bool:
+        record = storage.get_failed_download(record_id)
+        if not record or record[12] != STATUS_FAILED:
+            logging.warning(
+                "Ретрай #%d не запущен: запись не найдена или не в status=failed",
+                record_id,
+            )
+            return False
+        if download_manager.queued_count() >= download_manager.max_queue_size():
+            return False
+        if not storage.mark_failed_download_retrying(record_id):
+            return False
+        try:
+            try:
+                bot.send_message(
+                    record[2],
+                    f"{EMOJI_RETRY} Повторная загрузка по вашей ссылке — пробуем ещё раз…",
+                )
+            except Exception:
+                pass
+
+            if record[7]:
+                def _carousel_retry_job() -> None:
+                    try:
+                        if not active_downloads.try_acquire(record[3]):
+                            storage.mark_failed_download_failed(
+                                record_id,
+                                error_text="карусель уже скачивается",
+                            )
+                            return
+                        try:
+                            delivered = _run_carousel(
+                                record[1], record[2], record[3],
+                                record[9] or "Instagram", None,
+                                delivery_note=(
+                                    f"{EMOJI_RETRY} Повторная загрузка по вашей ссылке"
+                                ),
+                            )
+                            if not delivered:
+                                storage.mark_failed_download_failed(
+                                    record_id,
+                                    error_text=(
+                                        "карусель без доступных медиа или всё сверх лимита"
+                                    ),
+                                )
+                        finally:
+                            active_downloads.release(record[3])
+                    except Exception as exc:
+                        error_class = classify_download_error(exc, record[3])
+                        storage.mark_failed_download_failed(
+                            record_id, error_class, str(exc)[:500],
+                        )
+                        try:
+                            bot.send_message(
+                                record[2],
+                                f"Ошибка повторной загрузки карусели: {exc}",
+                            )
+                        except Exception:
+                            pass
+
+                download_manager.submit_user(record[1], _carousel_retry_job)
+            else:
+                ctx.queue_download(
+                    record[1],
+                    record[2],
+                    record[3],
+                    selected_format=record[4],
+                    title=record[9] or "Видео",
+                    status_message_id=None,
+                    audio_only=bool(record[6]),
+                    retry_of=record_id,
+                    delivery_note=f"{EMOJI_RETRY} Повторная загрузка по вашей ссылке",
+                )
+        except Exception as exc:
+            storage.mark_failed_download_failed(
+                record_id,
+                error_text=f"не удалось запустить ретрай: {exc}"[:500],
+            )
+            logging.exception("Не удалось запустить ретрай #%d", record_id)
+            return False
+        return True
+
+    # Открываем загрузку и ретрай для вызова из других модулей.
+    ctx.queue_download = queue_download
+    ctx.retry_failed_download = _retry_failed_record
 
     # --- Обработчики сообщений ---
 
@@ -1242,7 +1509,12 @@ def register_download_handlers(ctx) -> None:
         ctx.clear_last_inline(message.from_user.id, message.chat.id)
         open_tickets = storage.count_open_tickets()
         from app.keyboards import build_admin_menu
-        markup = build_admin_menu(open_tickets=open_tickets)
+        markup = build_admin_menu(
+            open_tickets=open_tickets,
+            failed_recent=storage.count_failed_downloads(
+                days=FAILED_DOWNLOADS_WINDOW_DAYS,
+            ),
+        )
         bot.send_message(
             message.chat.id,
             "\u2699\ufe0f \u041f\u0430\u043d\u0435\u043b\u044c \u0430\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\u0430",

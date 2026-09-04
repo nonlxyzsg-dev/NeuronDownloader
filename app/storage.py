@@ -1,5 +1,6 @@
 """SQLite-хранилище: пользователи, загрузки, тикеты, настройки."""
 
+import logging
 import os
 import sqlite3
 import uuid
@@ -15,6 +16,12 @@ class Storage:
         self.db_path = os.path.join(DATA_DIR, DB_FILENAME)
         self._init_db()
         self._migrate_db()
+        restored = self.reset_stale_retrying()
+        if restored > 0:
+            logging.info("Восстановлено зависших ретраев: %d", restored)
+        removed = self.cleanup_old_failed_downloads()
+        if removed > 0:
+            logging.info("Удалено старых записей об упавших: %d", removed)
 
     def _ensure_db(self) -> None:
         """Проверяет наличие БД и таблиц, при необходимости создаёт."""
@@ -51,6 +58,30 @@ class Storage:
                     url TEXT NOT NULL,
                     platform TEXT NOT NULL DEFAULT 'YouTube',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            # Упавшие загрузки для повторных попыток
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS failed_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    format_id TEXT,
+                    format_label TEXT DEFAULT '',
+                    audio_only INTEGER DEFAULT 0,
+                    is_carousel INTEGER DEFAULT 0,
+                    platform TEXT DEFAULT '',
+                    title TEXT DEFAULT '',
+                    error_class TEXT NOT NULL DEFAULT 'site',
+                    error_text TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'failed',
+                    attempts INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -184,6 +215,29 @@ class Storage:
                     url TEXT NOT NULL,
                     platform TEXT NOT NULL DEFAULT 'YouTube',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            # --- Упавшие загрузки ---
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS failed_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    format_id TEXT,
+                    format_label TEXT DEFAULT '',
+                    audio_only INTEGER DEFAULT 0,
+                    is_carousel INTEGER DEFAULT 0,
+                    platform TEXT DEFAULT '',
+                    title TEXT DEFAULT '',
+                    error_class TEXT NOT NULL DEFAULT 'site',
+                    error_text TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'failed',
+                    attempts INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -830,6 +884,166 @@ class Storage:
         with self._connect() as conn:
             count = conn.execute("SELECT COUNT(*) FROM file_cache").fetchone()[0]
         return count, 0
+
+    # --- Упавшие загрузки ---
+
+    def record_failed_download(
+        self,
+        user_id: int,
+        chat_id: int,
+        url: str,
+        format_id: str | None = None,
+        format_label: str = "",
+        audio_only: bool = False,
+        is_carousel: bool = False,
+        platform: str = "",
+        title: str = "",
+        error_class: str = "site",
+        error_text: str = "",
+    ) -> int | None:
+        """Создаёт или обновляет открытую запись об упавшей загрузке."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM failed_downloads "
+                "WHERE user_id = ? AND url = ? "
+                "AND COALESCE(format_id, '') = COALESCE(?, '') "
+                "AND status IN ('failed', 'retrying') "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, url, format_id),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "UPDATE failed_downloads "
+                    "SET error_class = ?, error_text = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ?",
+                    (error_class, error_text, row[0]),
+                )
+                return row[0]
+            cur = conn.execute(
+                "INSERT INTO failed_downloads "
+                "(user_id, chat_id, url, format_id, format_label, audio_only, "
+                "is_carousel, platform, title, error_class, error_text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, chat_id, url, format_id, format_label,
+                 1 if audio_only else 0, 1 if is_carousel else 0,
+                 platform, title, error_class, error_text),
+            )
+            return cur.lastrowid
+
+    def get_failed_download(self, download_id: int) -> tuple | None:
+        """Возвращает запись об упавшей загрузке по ID."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT id, user_id, chat_id, url, format_id, format_label, "
+                "audio_only, is_carousel, platform, title, error_class, error_text, status, "
+                "attempts, created_at, updated_at "
+                "FROM failed_downloads WHERE id = ?",
+                (download_id,),
+            )
+            return cur.fetchone()
+
+    def list_failed_downloads(
+        self, days: int = 7, page: int = 0, per_page: int = 8,
+    ) -> list[tuple]:
+        """Возвращает страницу открытых упавших загрузок за N дней."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT id, user_id, chat_id, url, format_id, format_label, "
+                "audio_only, is_carousel, platform, title, error_class, error_text, status, "
+                "attempts, created_at, updated_at "
+                "FROM failed_downloads "
+                "WHERE status IN ('failed', 'retrying') "
+                "AND created_at >= datetime('now', ?) "
+                "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                (f"-{days} days", per_page, page * per_page),
+            )
+            return cur.fetchall()
+
+    def count_failed_downloads(self, days: int = 7) -> int:
+        """Считает открытые упавшие загрузки за N дней."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM failed_downloads "
+                "WHERE status IN ('failed', 'retrying') "
+                "AND created_at >= datetime('now', ?)",
+                (f"-{days} days",),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def mark_failed_download_retrying(self, download_id: int) -> bool:
+        """Переводит упавшую загрузку в ретрай и увеличивает счётчик."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'retrying', attempts = attempts + 1, "
+                "updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status = 'failed'",
+                (download_id,),
+            )
+            return cur.rowcount > 0
+
+    def mark_failed_download_done(self, download_id: int) -> None:
+        """Помечает упавшую загрузку успешно завершённой."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'done', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (download_id,),
+            )
+
+    def mark_failed_download_failed(
+        self, download_id: int, error_class: str | None = None, error_text: str = "",
+    ) -> None:
+        """Возвращает загрузку в статус failed и обновляет ошибку."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'failed', error_class = COALESCE(?, error_class), error_text = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error_class, error_text, download_id),
+            )
+
+    def dismiss_failed_download(self, download_id: int) -> None:
+        """Помечает упавшую загрузку отклонённой."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'dismissed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (download_id,),
+            )
+
+    def mark_failed_downloads_done_for_url(self, user_id: int, url: str) -> int:
+        """Закрывает все открытые упавшие загрузки пользователя по URL."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'done', updated_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = ? AND url = ? "
+                "AND status IN ('failed', 'retrying')",
+                (user_id, url),
+            )
+            return cur.rowcount
+
+    def reset_stale_retrying(self) -> int:
+        """Возвращает зависшие повторные попытки в статус failed."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE failed_downloads "
+                "SET status = 'failed', updated_at = CURRENT_TIMESTAMP "
+                "WHERE status = 'retrying'"
+            )
+            return cur.rowcount
+
+    def cleanup_old_failed_downloads(self, days: int = 30) -> int:
+        """Удаляет старые завершённые и отклонённые записи."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM failed_downloads "
+                "WHERE status IN ('done', 'dismissed') "
+                "AND updated_at < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            return cur.rowcount
 
     # --- Отложенные загрузки (cookie-ошибки) ---
 

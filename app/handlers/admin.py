@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import sys
+import threading
 
 from telebot import types
 
@@ -27,6 +28,10 @@ from app.constants import (
     CB_ADMIN_SETTINGS,
     CB_ADMIN_TICKETS,
     CB_ADMIN_LOGS,
+    CB_ADMIN_RETRY,
+    CB_ADMIN_RETRY_ALL,
+    CB_ADMIN_RETRY_ONE,
+    CB_ADMIN_RETRY_PAGE,
     CB_ADMIN_RESTART,
     CB_ADMIN_RESTART_CONFIRM,
     CB_ADMIN_BACK,
@@ -46,6 +51,9 @@ from app.constants import (
     EMOJI_STATS,
     EMOJI_BACK,
     EMOJI_DONE,
+    EMOJI_RETRY,
+    FAILED_DOWNLOADS_PER_PAGE,
+    FAILED_DOWNLOADS_WINDOW_DAYS,
     INCIDENT_FIXED,
     INCIDENT_WONT_FIX,
     STATE_AWAITING_BROADCAST_AFFECTED,
@@ -55,11 +63,13 @@ from app.constants import (
     STATE_AWAITING_CHANNEL_ID,
     STATE_AWAITING_LOG_LINES,
     STATE_REPLYING_TICKET,
+    STATUS_FAILED,
 )
 from app.keyboards import (
     build_admin_menu,
     build_admin_back,
     build_admin_incidents_list,
+    build_admin_retry_page,
     build_admin_stats_submenu,
     build_admin_users_page,
     build_admin_settings,
@@ -177,6 +187,36 @@ def register_admin_handlers(ctx) -> None:
         )
 
     # ------------------------------------------------------------------
+    # Вспомогательная функция: отображение упавших загрузок
+    # ------------------------------------------------------------------
+
+    def _show_failed_page(chat_id: int, message_id: int, page: int):
+        total = storage.count_failed_downloads(days=FAILED_DOWNLOADS_WINDOW_DAYS)
+        total_pages = max(1, math.ceil(total / FAILED_DOWNLOADS_PER_PAGE))
+        page = max(0, min(page, total_pages - 1))
+        records = storage.list_failed_downloads(
+            days=FAILED_DOWNLOADS_WINDOW_DAYS,
+            page=page,
+            per_page=FAILED_DOWNLOADS_PER_PAGE,
+        )
+        users_map: dict[int, str] = {}
+        for record in records:
+            user_id = record[1]
+            if user_id not in users_map:
+                user_row = storage.get_user(user_id)
+                if user_row:
+                    users_map[user_id] = user_row[1] or user_row[2] or str(user_id)
+                else:
+                    users_map[user_id] = str(user_id)
+        markup = build_admin_retry_page(records, page, total_pages, users_map)
+        _safe_edit(
+            chat_id, message_id,
+            f"{EMOJI_RETRY} Упавшие загрузки за 7 дней: {total}\n"
+            "(❌ — ошибка, ⏳ — перекачивается)",
+            reply_markup=markup,
+        )
+
+    # ------------------------------------------------------------------
     # Вспомогательная функция: отображение списка обращений
     # ------------------------------------------------------------------
 
@@ -207,6 +247,9 @@ def register_admin_handlers(ctx) -> None:
         return build_admin_menu(
             open_tickets=storage.count_open_tickets(),
             open_incidents=storage.count_open_incidents(),
+            failed_recent=storage.count_failed_downloads(
+                days=FAILED_DOWNLOADS_WINDOW_DAYS,
+            ),
         )
 
     @bot.message_handler(commands=["admin"])
@@ -373,6 +416,118 @@ def register_admin_handlers(ctx) -> None:
         except (ValueError, IndexError):
             page = 0
         _show_users_page(call.message.chat.id, call.message.message_id, page)
+
+    # ==================================================================
+    # CB_ADMIN_RETRY -> список упавших загрузок
+    # ==================================================================
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_RETRY)
+    def cb_admin_retry(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        _show_failed_page(call.message.chat.id, call.message.message_id, 0)
+
+    # ==================================================================
+    # CB_ADMIN_RETRY_PAGE|{page} -> навигация по упавшим загрузкам
+    # ==================================================================
+
+    @bot.callback_query_handler(
+        func=lambda c: c.data and c.data.startswith(f"{CB_ADMIN_RETRY_PAGE}|")
+    )
+    def cb_admin_retry_page(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        try:
+            page = int(call.data.split("|", 1)[1])
+        except (ValueError, IndexError):
+            page = 0
+        _show_failed_page(call.message.chat.id, call.message.message_id, page)
+
+    # ==================================================================
+    # CB_ADMIN_RETRY_ONE|{id} -> перекачка одной записи
+    # ==================================================================
+
+    @bot.callback_query_handler(
+        func=lambda c: c.data and c.data.startswith(f"{CB_ADMIN_RETRY_ONE}|")
+    )
+    def cb_admin_retry_one(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        try:
+            parts = call.data.split("|")
+            record_id = int(parts[1])
+        except (ValueError, IndexError):
+            bot.answer_callback_query(call.id, "Ошибка.")
+            return
+        try:
+            page = int(parts[2])
+        except (ValueError, IndexError):
+            page = 0
+        ok = ctx.retry_failed_download(record_id)
+        if ok:
+            answer = "Перекачка запущена."
+        else:
+            answer = "Нельзя запустить: очередь переполнена или запись уже в работе."
+        bot.answer_callback_query(call.id, answer)
+        _show_failed_page(call.message.chat.id, call.message.message_id, page)
+
+    # ==================================================================
+    # CB_ADMIN_RETRY_ALL -> пакетная перекачка
+    # ==================================================================
+
+    @bot.callback_query_handler(func=lambda c: c.data == CB_ADMIN_RETRY_ALL)
+    def cb_admin_retry_all(call: types.CallbackQuery):
+        user_id = call.from_user.id
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id, "Запускаю пакетную перекачку…")
+        admin_chat_id = call.message.chat.id
+
+        def _retry_all() -> None:
+            started = 0
+            skipped = 0
+            total = storage.count_failed_downloads(
+                days=FAILED_DOWNLOADS_WINDOW_DAYS,
+            )
+            all_records = storage.list_failed_downloads(
+                days=FAILED_DOWNLOADS_WINDOW_DAYS,
+                page=0,
+                per_page=total,
+            )
+            for record in all_records:
+                try:
+                    if record[12] != STATUS_FAILED:
+                        skipped += 1
+                        continue
+                    ok = ctx.retry_failed_download(record[0])
+                    if ok:
+                        started += 1
+                        continue
+                    current = storage.get_failed_download(record[0])
+                    skipped += 1
+                    if current and current[12] == STATUS_FAILED:
+                        break
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось запустить перекачку #%s: %s", record[0], exc,
+                    )
+                    skipped += 1
+            bot.send_message(
+                admin_chat_id,
+                f"{EMOJI_RETRY} Пакетная перекачка запущена: {started}, "
+                f"пропущено: {skipped}",
+            )
+
+        threading.Thread(target=_retry_all, daemon=True).start()
 
     # ==================================================================
     # 9. CB_ADMIN_USER_BLOCK|{user_id} -> блокировка пользователя
