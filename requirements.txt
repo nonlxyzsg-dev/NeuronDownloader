@@ -1,3 +1,7 @@
 pyTelegramBotAPI==4.14.0
+# Пин задаёт только нижнюю границу; актуальность версии yt-dlp держит
+# scripts/yt-dlp-autoupdate.sh (cron 03:40): pip -U + смоук + откат.
 yt-dlp>=2026.1.31
+# Имперсонация браузера (TLS-fingerprint) для экстракторов (PornHub и др.)
+curl_cffi>=0.16
 python-dotenv==1.0.1

@@ -6,3 +6,5 @@ __pycache__/
 Pipfile
 Pipfile.lock
 check_formats.py
+# Лог yt-dlp-autoupdate
+logs/
