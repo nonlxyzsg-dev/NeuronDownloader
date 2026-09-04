@@ -1,0 +1,16 @@
+[Unit]
+Description=Neuron Downloader Bot
+After=network.target
+
+[Service]
+# Папка, откуда запускаем
+WorkingDirectory=/opt/NeuronDownloader
+# Команда запуска (используем python из нашего venv!)
+ExecStart=/opt/NeuronDownloader/venv/bin/python -m app.main
+# Если упадет — перезагрузить через 5 секунд
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

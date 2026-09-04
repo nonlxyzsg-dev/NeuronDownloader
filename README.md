@@ -332,3 +332,27 @@ COOKIES_FILE=/path/to/cookies.txt
 - Для закрытых страниц/видео используйте cookies.
 - Node.js необходим для корректной работы с YouTube — без него возможны ошибки авторизации.
 - FFmpeg необходим для функции разделения видео на части.
+
+## Перенос на новый сервер
+
+Бутстрап автоматизирован скриптом `scripts/setup-server.sh` (идемпотентный, повторный запуск безопасен):
+системные пакеты (ffmpeg, python3-venv), Node.js 22 через NodeSource, venv и зависимости
+(`requirements.txt` + `yt-dlp[default]` — extra ставит `yt-dlp-ejs` ТОЧНОЙ версии под установленный
+yt-dlp; без него yt-dlp молча игнорирует устаревший ejs, и JS-челлендж YouTube не решается),
+systemd-юнит из `deploy/neuron_bot.service` и три cron-записи (автообновление кода каждые 5 минут,
+рестарт бота в 03:30, автообновление yt-dlp со смоук-тестом в 03:40). В конце скрипт печатает чеклист.
+
+Порядок переноса (путь по умолчанию `/opt/NeuronDownloader`):
+
+1. Подготовь сервер: Ubuntu 22.04+, root; склонируй репо в `/opt/NeuronDownloader`
+   (удобно read-only deploy key — тогда 5-минутный cron автообновления будет тянуть main сам).
+2. `bash scripts/setup-server.sh` — ставит всё и регистрирует кроны.
+3. Восстанови из бэкапа старого сервера то, чего нет в репо: `.env`, `data/` (bot.db, cookies.txt).
+   При нестандартном пути установки поправь его в `deploy/neuron_bot.service`, `autoupdate.sh`
+   и cron-строках.
+4. `systemctl restart neuron_bot`, затем `journalctl -u neuron_bot -f` — должно быть
+   «Бот запущен» без traceback.
+
+Важно: свежие cookies (`cookies.txt`, санитизируются ботом в `data/cookies.cleaned.txt`) нужны для
+YouTube/Instagram/VK; валидные YouTube-куки работают только в связке с Node.js 22+ и подходящей
+версией `yt-dlp-ejs` (см. выше) — иначе web-клиент YouTube отдаёт «The page needs to be reloaded».
