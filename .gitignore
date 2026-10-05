@@ -8,3 +8,8 @@ Pipfile.lock
 check_formats.py
 # Лог yt-dlp-autoupdate
 logs/
+
+# Local runtime secrets/backup files (never commit)
+.env.bak*
+cookies.txt.*
+venv/
