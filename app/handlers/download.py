@@ -67,7 +67,6 @@ from app.keyboards import (
     build_main_menu,
     build_split_confirm_keyboard,
     build_video_buttons,
-    build_video_report_button,
 )
 from app.downloader import (
     _get_video_codec,
@@ -298,6 +297,16 @@ def register_download_handlers(ctx) -> None:
     ) -> bool:
         """Скачивает карусель и отправляет её альбомами (по 10 элементов)."""
         media, full_info = downloader.download_carousel(url)
+        # Второй шанс — только когда внутренний фолбэк download_carousel НЕ МОГ
+        # сработать: extract_info не дал ни playlist_count, ни entries
+        # (expected=0). При expected>0 фолбэк внутри уже был (и его вызов API
+        # тоже) — повторный удар по rate-limit не нужен.
+        expected = (full_info or {}).get("playlist_count") or len((full_info or {}).get("entries") or [])
+        if not media and is_instagram_url(url) and expected == 0:
+            # Фото-пост, у которого yt-dlp вернул плейлист вовсе без entries:
+            # добираем фото одиночного поста приватным API.
+            logging.info("Карусель пуста, пробую фото-фолбэк Instagram: %s", url)
+            media = downloader.download_instagram_photos(url)
         work_dir = os.path.dirname(media[0]["path"]) if media else None
         try:
             if not media:
@@ -1642,6 +1651,13 @@ def register_download_handlers(ctx) -> None:
                     message.from_user.id, message.chat.id, url, "YouTube",
                 )
                 notify_admin_cookies_expired(bot, "YouTube")
+            elif is_instagram_url(url) and "no video formats found" in error_lower:
+                # Фото-пост: yt-dlp не умеет — тащим через приватный API
+                # карусельным путём. Маркеры «login required»/«rate-limit»
+                # не пересекаются с этой подстрокой — ветка стоит первой
+                # среди Instagram-веток намеренно.
+                _handle_carousel(message, url, {}, subscribed, reaction_message_id)
+                return
             elif is_instagram_url(url) and (
                 "inappropriate" in error_lower
                 or "unavailable for certain audiences" in error_lower
@@ -1699,6 +1715,11 @@ def register_download_handlers(ctx) -> None:
                 for fmt in info.get("formats", [])
             )
             if not has_video:
+                if is_instagram_url(url):
+                    # Фото-пост/карусель: yt-dlp вернул плейлист без форматов —
+                    # вместо ложного предупреждения добираем фото приватным API.
+                    _handle_carousel(message, url, {}, subscribed, reaction_message_id)
+                    return
                 warning_text = (
                     "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0432\u0438\u0434\u0435\u043e\u0444\u043e\u0440\u043c\u0430\u0442\u044b. "
                     "\u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e, \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f \u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c cookies \u0438\u043b\u0438 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u0430."
@@ -2146,7 +2167,6 @@ def register_download_handlers(ctx) -> None:
         username = ""
         if user_row:
             username = user_row[1] or user_row[2] or ""
-        user_label = f"@{username}" if username else str(call.from_user.id)
         notify_admin_error(
             bot, call.from_user.id, username,
             f"Инцидент #{incident_id}: видео не воспроизводится "
@@ -2178,7 +2198,7 @@ def register_download_handlers(ctx) -> None:
 
         progress_msg = bot.send_message(
             re_chat_id,
-            f"\U0001f504 Перекодировка запрошена. Скачиваем видео повторно\u2026",
+            "\U0001f504 Перекодировка запрошена. Скачиваем видео повторно\u2026",
         )
         progress_mid = progress_msg.message_id
 

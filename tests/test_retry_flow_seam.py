@@ -150,6 +150,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
         bot.send_message = lambda *args, **kwargs: None
         ctx.downloader.download_carousel = empty_carousel
+        ctx.downloader.download_instagram_photos = lambda url: []  # изоляция: без сети
         empty_carousel_id = storage.record_failed_download(
             user_id=99,
             chat_id=99,

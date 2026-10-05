@@ -1,17 +1,22 @@
 """Скачивание видео через yt-dlp, разделение больших файлов (FFmpeg)."""
 
+import http.client
 import json
 import logging
 import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from collections.abc import Callable
+from urllib.parse import urlparse
 
 import requests
 from yt_dlp import YoutubeDL
 
+from app import instagram_api
 from app.config import (
     COOKIES_FILE,
     USER_AGENT,
@@ -684,6 +689,187 @@ def download_thumbnail(url: str | None, data_dir: str) -> str | None:
     return None
 
 
+def _detect_image_ext(content: bytes) -> str | None:
+    """Расширение картинки по magic-байтам (jpeg/png/webp/heic), иначе None."""
+    if len(content) < 12:
+        return None
+    if content[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if content[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "webp"
+    if content[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
+        return "heic"
+    return None
+
+
+# Жёсткий кап тела картинки с CDN Instagram (недоверенный источник).
+_MAX_INSTAGRAM_IMAGE_BYTES = 30 * 1024 * 1024
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Редирект-хендлер с SSRF-ревалидацией каждого хопа.
+
+    URL картинки приходит из ответа приватного API (недоверенный): редирект
+    разрешён только на https и хост *.cdninstagram.com / *.fbcdn.net. Чужой
+    хоп → None (редирект не следуем, наверх уходит исходный 3xx).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not instagram_api.is_allowed_media_host(newurl):
+            try:
+                host = urlparse(newurl).hostname or "?"
+            except ValueError:
+                host = "?"
+            logging.warning(
+                "Instagram CDN: редирект на недопустимый хост отклонён (%s)", host,
+            )
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# Отдельный opener: глобальный urlopen ходил бы по редиректам на любой хост.
+_IG_IMAGE_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
+
+
+def _fetch_instagram_image(url: str, timeout: float = 30.0) -> bytes | None:
+    """Скачивает картинку с CDN Instagram (UA обязателен, cookie не нужен).
+
+    Ровно один повтор только при сетевой ошибке; HTTP-код != 200 → None.
+    URL из ответа API недоверенный: редиректы следуются только на https и
+    CDN-хосты Instagram (каждый хоп ревалидируется), тело читается с капом.
+    """
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    except ValueError as exc:
+        # Control-символы или битый IPv6-литерал в URL — Request не собирается.
+        logging.debug("Instagram CDN: некорректный URL картинки: %s", exc)
+        return None
+    for attempt in (1, 2):
+        try:
+            with _IG_IMAGE_OPENER.open(request, timeout=timeout) as response:
+                if response.status != 200:
+                    logging.debug("Instagram CDN: HTTP %s при скачивании фото", response.status)
+                    return None
+                content = response.read(_MAX_INSTAGRAM_IMAGE_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            logging.debug("Instagram CDN: HTTP %s при скачивании фото", exc.code)
+            return None
+        except http.client.InvalidURL as exc:
+            logging.debug("Instagram CDN: некорректный URL картинки: %s", exc)
+            return None
+        except ValueError as exc:
+            logging.debug("Instagram CDN: некорректный URL картинки: %s", exc)
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            logging.debug(
+                "Instagram CDN: сетевая ошибка (попытка %d/2): %s", attempt, exc,
+            )
+            if attempt == 2:
+                break
+            time.sleep(1.0)
+            continue
+        if len(content) > _MAX_INSTAGRAM_IMAGE_BYTES:
+            logging.warning(
+                "Instagram CDN: файл слишком большой (> %d байт), пропускаю",
+                _MAX_INSTAGRAM_IMAGE_BYTES,
+            )
+            return None
+        return content
+    return None
+
+
+def merge_carousel_media(
+    children: list[dict],
+    existing_media: list[dict],
+    fetch_photo: Callable[[dict, int], dict | None],
+) -> list[dict]:
+    """Сшивает порядок детей поста со скачанными yt-dlp файлами.
+
+    Существующие файлы делятся на видео и фото. Точная раскладка (видео-ребёнок
+    берёт следующий существующий видео-файл, фото-ребёнок — следующий
+    существующий фото-файл) возможна, только когда количества обоих типов
+    сходятся с детьми. При любом расхождении существующий порядок НЕ трогаем
+    (autonumber), все фото-дети скачиваются через fetch_photo и дописываются в
+    конец, а существующие фото-файлы в merge не попадают (остаются в каталоге,
+    не отправляются — задвоения нет): иначе содержимое молча попадает в чужие
+    слоты альбома. Фото-ребёнок без своего файла скачивается через
+    fetch_photo(child, idx) (None/исключение — warning и пропуск). Возвращает
+    ordered list [{'path', 'is_video', 'width', 'height'}].
+    """
+    existing: list[dict] = [dict(item) for item in (existing_media or [])]
+    video_files = [item for item in existing if item.get("is_video")]
+    photo_files = [item for item in existing if not item.get("is_video")]
+    child_list = list(children or [])
+    video_children_count = sum(1 for child in child_list if child.get("is_video"))
+    photo_children_count = len(child_list) - video_children_count
+    exact_layout = (
+        len(video_files) == video_children_count
+        and (photo_children_count == 0 or len(photo_files) == photo_children_count)
+    )
+    if not exact_layout:
+        logging.warning(
+            "Instagram photo fallback: порядок элементов может не совпадать: "
+            "частичное скачивание видео (файлов %d, видео-элементов %d), "
+            "фото (файлов %d, фото-элементов %d)",
+            len(video_files),
+            video_children_count,
+            len(photo_files),
+            photo_children_count,
+        )
+        merged = list(video_files)
+        photo_index = 0
+        for child in child_list:
+            if child.get("is_video"):
+                continue
+            photo = _fetch_merged_photo(child, photo_index, fetch_photo)
+            photo_index += 1
+            if photo:
+                merged.append(photo)
+        return merged
+    merged: list[dict] = []
+    video_index = 0
+    photo_index = 0
+    for child in child_list:
+        if child.get("is_video"):
+            if video_index < len(video_files):
+                merged.append(video_files[video_index])
+                video_index += 1
+            else:
+                logging.warning(
+                    "Instagram photo fallback: для видео-элемента нет скачанного "
+                    "файла, пропускаю",
+                )
+            continue
+        if photo_index < len(photo_files):
+            merged.append(photo_files[photo_index])
+            photo_index += 1
+            continue
+        photo = _fetch_merged_photo(child, photo_index, fetch_photo)
+        photo_index += 1
+        if photo:
+            merged.append(photo)
+    return merged
+
+
+def _fetch_merged_photo(
+    child: dict,
+    photo_index: int,
+    fetch_photo: Callable[[dict, int], dict | None],
+) -> dict | None:
+    """Одно фото-ребёнок через fetch_photo; сбой — warning и None."""
+    try:
+        photo = fetch_photo(child, photo_index)
+    except Exception as exc:  # noqa: BLE001 — сбой одного фото не должен валить карусель
+        logging.warning("Instagram photo fallback: фото не скачалось: %s", exc)
+        return None
+    if not photo:
+        logging.warning("Instagram photo fallback: фото пропущено (нет файла)")
+        return None
+    return photo
+
+
 class YtDlpLogger:
     """Логгер-обёртка для перенаправления вывода yt-dlp в стандартный logging."""
 
@@ -729,6 +915,8 @@ class VideoDownloader:
         sanitized_lines: list[str] = []
         has_magic = False
         changed = False
+        normalized_expires = 0
+        dropped_expires = 0
 
         with open(COOKIES_FILE, "r", encoding="utf-8") as handle:
             for line in handle:
@@ -744,6 +932,20 @@ class VideoDownloader:
                     changed = True
                     continue
                 domain, domain_specified, path, secure, expires, name, value = parts
+                if not expires.lstrip("-").isdigit():
+                    # Свежие дампы кукис содержат float-expires (например
+                    # «1811526512.091545») — такой файл не грузит ни stdlib,
+                    # ни yt-dlp («invalid Netscape format cookies file»).
+                    try:
+                        expires = str(int(float(expires)))
+                        changed = True
+                        normalized_expires += 1
+                    except (ValueError, OverflowError):
+                        # Мусорное/пустое expires чинить нечем: строка с ним
+                        # невалидна для MozillaCookieJar — дропаем её целиком.
+                        changed = True
+                        dropped_expires += 1
+                        continue
                 initial_dot = domain.startswith(".")
                 domain_specified_flag = domain_specified.upper() == "TRUE"
                 if initial_dot and not domain_specified_flag:
@@ -758,6 +960,15 @@ class VideoDownloader:
 
         if not has_magic:
             changed = True
+
+        if normalized_expires:
+            logging.debug(
+                "Файл cookies: нормализовано float-expires полей: %d", normalized_expires,
+            )
+        if dropped_expires:
+            logging.debug(
+                "Файл cookies: дропнуто строк с мусорным expires: %d", dropped_expires,
+            )
 
         if not changed:
             return COOKIES_FILE
@@ -1104,49 +1315,172 @@ class VideoDownloader:
         Папку с файлами (общий родитель) вызывающий код обязан удалить после
         отправки.
         """
-        import shutil  # noqa: F401  (используется вызывающим кодом косвенно)
+        import shutil
         import tempfile
 
         work_dir = tempfile.mkdtemp(prefix="carousel_", dir=self.data_dir)
-        ydl_opts = self._base_opts(url=url)
-        # Карусель — это плейлист, поэтому noplaylist выключаем, иначе yt-dlp
-        # вернёт только один элемент.
-        ydl_opts["noplaylist"] = False
-        # Один битый элемент карусели не должен валить всю загрузку.
-        ydl_opts["ignoreerrors"] = True
-        # Нумеруем файлы по порядку, чтобы сохранить очерёдность в альбоме.
-        ydl_opts["outtmpl"] = os.path.join(work_dir, "%(autonumber)03d.%(ext)s")
-        if progress_callback:
-            ydl_opts["progress_hooks"] = [progress_callback]
-
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-        video_exts = {"mp4", "mov", "mkv", "webm", "m4v"}
-        photo_exts = {"jpg", "jpeg", "png", "webp", "heic"}
         media: list[dict] = []
-        for name in sorted(os.listdir(work_dir)):
-            full = os.path.join(work_dir, name)
-            if not os.path.isfile(full):
-                continue
-            ext = os.path.splitext(name)[1].lower().lstrip(".")
-            is_video = ext in video_exts
-            is_photo = ext in photo_exts
-            if not (is_video or is_photo):
-                continue
-            width = height = None
-            if is_video:
-                try:
-                    width, height = get_video_dimensions(full)
-                except Exception:
-                    pass
-            media.append({
-                "path": full,
-                "is_video": is_video,
-                "width": width,
-                "height": height,
-            })
-        return media, (info or {})
+        try:
+            ydl_opts = self._base_opts(url=url)
+            # Карусель — это плейлист, поэтому noplaylist выключаем, иначе yt-dlp
+            # вернёт только один элемент.
+            ydl_opts["noplaylist"] = False
+            # Один битый элемент карусели не должен валить всю загрузку.
+            ydl_opts["ignoreerrors"] = True
+            # Нумеруем файлы по порядку, чтобы сохранить очерёдность в альбоме.
+            ydl_opts["outtmpl"] = os.path.join(work_dir, "%(autonumber)03d.%(ext)s")
+            if progress_callback:
+                ydl_opts["progress_hooks"] = [progress_callback]
+
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+
+            video_exts = {"mp4", "mov", "mkv", "webm", "m4v"}
+            photo_exts = {"jpg", "jpeg", "png", "webp", "heic"}
+            for name in sorted(os.listdir(work_dir)):
+                full = os.path.join(work_dir, name)
+                if not os.path.isfile(full):
+                    continue
+                ext = os.path.splitext(name)[1].lower().lstrip(".")
+                is_video = ext in video_exts
+                is_photo = ext in photo_exts
+                if not (is_video or is_photo):
+                    continue
+                width = height = None
+                if is_video:
+                    try:
+                        width, height = get_video_dimensions(full)
+                    except Exception:
+                        pass
+                media.append({
+                    "path": full,
+                    "is_video": is_video,
+                    "width": width,
+                    "height": height,
+                })
+
+            # Фолбэк фото из приватного API Instagram: yt-dlp на фото-постах не
+            # отдаёт файлов (плейлист с пустыми entries). Триггер — только при
+            # нехватке элементов, чтобы полная видео-карусель не дёргала API.
+            expected = (info or {}).get("playlist_count") or len((info or {}).get("entries") or [])
+            if expected and len(media) < expected:
+                sessionid = instagram_api.load_sessionid(self.cookiefile)
+                if not sessionid:
+                    logging.warning("Instagram photo fallback: sessionid не найден, пропускаю")
+                    return media, (info or {})
+                media_item = instagram_api.fetch_media_info(url, sessionid)
+                if not media_item:
+                    logging.warning("Instagram photo fallback: медиа недоступно через API")
+                    return media, (info or {})
+                children = instagram_api.iter_photo_children(media_item)
+
+                def fetch_photo(child: dict, idx: int) -> dict | None:
+                    return self._download_instagram_photo(child, work_dir, idx)
+
+                media = merge_carousel_media(children, media, fetch_photo)
+                logging.info(
+                    "Instagram photo fallback: получено фото %d из %d элементов (url=%s)",
+                    sum(1 for item in media if not item.get("is_video")),
+                    len(children),
+                    url,
+                )
+            return media, (info or {})
+        finally:
+            # Пустой media (ранние возвраты фолбэка, пустой результат после
+            # merge, исключение yt-dlp) — каталог пуст или ненужен, убираем на
+            # ЛЮБОМ пути выхода: вызывающий код удаляет папку только при
+            # непустом media, иначе carousel_* утекает в data_dir навсегда.
+            if not media:
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _download_instagram_photo(
+        self, child: dict, work_dir: str, idx: int
+    ) -> dict | None:
+        """Скачивает одно фото-ребёнок поста в work_dir как ig{idx:03d}.<ext>.
+
+        Возвращает media-словарь {'path', 'is_video': False, 'width', 'height'}
+        либо None (нет ссылки, чужой хост, плохой контент, ошибка сохранения).
+        Префикс ig не конфликтует с autonumber-нумерацией yt-dlp.
+        """
+        image_url = child.get("image_url")
+        if not image_url:
+            logging.warning("Instagram photo fallback: у элемента нет ссылки на фото")
+            return None
+        if not instagram_api.is_allowed_media_host(image_url):
+            try:
+                # URL вроде «https://[::1/x.jpg» бросает ValueError при разборе.
+                host = urlparse(image_url).hostname or "?"
+            except ValueError:
+                host = "?"
+            logging.warning(
+                "Instagram photo fallback: недопустимый хост картинки, пропускаю (%s)",
+                host,
+            )
+            return None
+        content = _fetch_instagram_image(image_url)
+        if not content or len(content) <= 1024:
+            logging.warning("Instagram photo fallback: картинка пустая или слишком мала")
+            return None
+        ext = _detect_image_ext(content)
+        if ext == "heic":
+            # Bot API InputMediaPhoto принимает PNG/JPEG/WEBP; HEIC валит всю
+            # группу альбома — элемент пропускаем, файл не сохраняем.
+            logging.warning("Instagram photo fallback: HEIC не поддерживается Telegram, пропускаю")
+            return None
+        if not ext:
+            logging.warning("Instagram photo fallback: неизвестный формат картинки")
+            return None
+        path = os.path.join(work_dir, f"ig{idx:03d}.{ext}")
+        try:
+            with open(path, "wb") as handle:
+                handle.write(content)
+        except OSError as exc:
+            logging.warning("Instagram photo fallback: не удалось сохранить фото: %s", exc)
+            return None
+        return {
+            "path": path,
+            "is_video": False,
+            "width": child.get("width"),
+            "height": child.get("height"),
+        }
+
+    def download_instagram_photos(self, url: str) -> list[dict]:
+        """Фото-пост целиком через приватный API Instagram.
+
+        Для кейса, когда get_info уже упал или пуст по форматам: создаёт
+        work_dir внутри self.data_dir (удалит вызывающий код), качает все
+        фото-дети поста и возвращает ordered media
+        [{'path', 'is_video': False, 'width', 'height'}]. Пустой список, если
+        фото не добыты (тогда временная папка удаляется здесь же).
+        """
+        import shutil
+        import tempfile
+
+        sessionid = instagram_api.load_sessionid(self.cookiefile)
+        if not sessionid:
+            logging.warning("Instagram photo fallback: sessionid не найден, пропускаю")
+            return []
+        media_item = instagram_api.fetch_media_info(url, sessionid)
+        if not media_item:
+            logging.warning("Instagram photo fallback: медиа недоступно через API")
+            return []
+        work_dir = tempfile.mkdtemp(prefix="carousel_", dir=self.data_dir)
+        children = [
+            child for child in instagram_api.iter_photo_children(media_item)
+            if not child.get("is_video")
+        ]
+        media: list[dict] = []
+        for idx, child in enumerate(children):
+            try:
+                photo = self._download_instagram_photo(child, work_dir, idx)
+            except Exception as exc:  # noqa: BLE001 — гибель одного фото не валит пакет
+                logging.warning("Instagram photo fallback: фото не скачалось: %s", exc)
+                photo = None
+            if photo:
+                media.append(photo)
+        if not media:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        return media
 
     def get_direct_url(
         self,

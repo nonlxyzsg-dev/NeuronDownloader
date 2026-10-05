@@ -1437,6 +1437,39 @@ def register_admin_handlers(ctx) -> None:
             logger.warning("Проверка cookies: ошибка (не auth): %s", check_exc)
             cookies_ok = True  # не блокируем, ошибка не связана с cookies
 
+        # Лёгкая проверка Instagram-кукис (1 запрос к приватному API, без yt-dlp).
+        try:
+            from app import instagram_api
+
+            sid = instagram_api.load_sessionid(
+                getattr(ctx.downloader, "cookiefile", None) or cookies_path
+            )
+            if sid is None:
+                instagram_line = (
+                    "\n📷 Instagram: sessionid в файле не найден "
+                    "(Instagram будет работать без авторизации)."
+                )
+            else:
+                alive = instagram_api.ping_session(sid)
+                if alive is True:
+                    instagram_line = "\n📷 Instagram: sessionid живой."
+                elif alive is False:
+                    instagram_line = (
+                        "\n⚠️ Instagram: sessionid МЁРТВ — "
+                        "загрузи свежие cookies с логином в Instagram."
+                    )
+                else:
+                    instagram_line = (
+                        "\n📷 Instagram: проверить не удалось "
+                        "(сеть или rate-limit — повторится фоновым монитором)."
+                    )
+        except Exception:
+            logger.exception("Проверка Instagram-sessionid не удалась")
+            instagram_line = (
+                "\n📷 Instagram: проверить не удалось "
+                "(сеть или rate-limit — повторится фоновым монитором)."
+            )
+
         # Cookies рабочие — обрабатываем отложенные загрузки всех платформ
         # (cookies-файл общий, может содержать cookies для YouTube, Instagram и др.)
         pending = storage.list_pending_cookie_downloads()
@@ -1446,6 +1479,7 @@ def register_admin_handlers(ctx) -> None:
             f"Файл: {cookies_path}\n"
             f"Размер: {len(downloaded)} байт\n"
             f"Cookiefile: {result}"
+            f"{instagram_line}"
         )
         if pending_count > 0:
             status_text += f"\n\n📋 Отложенных загрузок: {pending_count} — начинаю обработку..."
