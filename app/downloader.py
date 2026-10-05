@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -891,17 +892,258 @@ class FormatOption:
     height: int | None
 
 
+# Домены, на которых живёт IG session-кука (sessionid). yt-dlp при каждом
+# вызове перезаписывает cookiefile и вымывает session-куки Instagram —
+# поэтому снимаем снапшот ДО вызова и мержим ПОСЛЕ каждого (см. restore).
+_INSTAGRAM_SESSION_DOMAINS = ("instagram.com", "instagr.am")
+
+# Префикс HttpOnly-куки в браузерном cookies.txt (соглашение curl/wget),
+# регистр ровно такой, как в соглашении.
+_HTTPONLY_PREFIX = "#HttpOnly_"
+
+# Мерж под замком: два воркера очереди могут звать restore одновременно.
+_INSTAGRAM_SESSION_LOCK = threading.Lock()
+
+
+def _is_instagram_session_cookie(domain: str, name: str) -> bool:
+    """sessionid на instagram.com / instagr.am и их поддоменах (см. тесты)."""
+    if name != "sessionid":
+        return False
+    normalized = (domain or "").lower().removeprefix("#httponly_").removeprefix(".")
+    return normalized in _INSTAGRAM_SESSION_DOMAINS or normalized.endswith(
+        tuple(f".{item}" for item in _INSTAGRAM_SESSION_DOMAINS)
+    )
+
+
+def _normalize_session_line(line: str) -> str | None:
+    """Нормализует строку cookies-файла в plain 7-поле или вернёт None.
+
+    Вход — строка без краевых пробелов/переводов строк. Строка с префиксом
+    `#HttpOnly_` разбирается как обычная (префикс снят), прочие `#`-строки —
+    комментарий/шапка Netscape-файла. Результат — 7-полевая строка БЕЗ
+    префикса: потребители (app.instagram_api.load_sessionid,
+    app.cookie_monitor._instagram_sessionid_expired) пропускают `#`-строки,
+    поэтому снапшот и мерж идут plain. Неверное число полей, чужой домен или
+    имя, пустое/непечатаемое значение, нечитаемый expires — None, а не ошибка.
+    """
+    if line.startswith(_HTTPONLY_PREFIX):
+        line = line[len(_HTTPONLY_PREFIX):]
+    elif line.startswith("#"):
+        return None
+    parts = line.split("\t")
+    if len(parts) != 7:
+        return None
+    domain, domain_specified, path, secure, expires, name, value = parts
+    if not _is_instagram_session_cookie(domain, name):
+        return None
+    if not value or not value.isprintable():
+        # Непечатаемое значение load_sessionid всё равно отбросил бы —
+        # в снапшот и файл такую строку не берём.
+        return None
+    try:
+        normalized_expires = str(int(float(expires)))
+    except (ValueError, OverflowError):
+        # Мусорное expires чинить нечем — строку пропускаем (как дроп
+        # мусорной строки в санитайзере).
+        return None
+    return "\t".join(
+        [domain, domain_specified, path, secure, normalized_expires, name, value]
+    )
+
+
+def _read_instagram_session_lines_once(cookiefile: str) -> list[str]:
+    """Один снимок Netscape-файла: НОРМАЛИЗОВАННЫЕ plain строки IG session-кукис.
+
+    Строки `#HttpOnly_...` возвращаются БЕЗ префикса: потребители снапшота
+    (load_sessionid, cookie_monitor, фото-фолбэк) пропускают `#`-строки, и
+    вербатим-строка была бы для них невидима. Обычные строки нормализуются
+    так же (`int(float(expires))`, как в _prepare_cookiefile), прочие
+    `#`-строки, пустые, не-7-полевые и нечитаемые пропускаются. Дубликаты
+    после нормализации убираются, порядок — как в файле.
+    """
+    try:
+        with open(cookiefile, "r", encoding="utf-8") as handle:
+            raw_lines = [line.rstrip("\n") for line in handle]
+    except (OSError, UnicodeDecodeError) as exc:
+        logging.warning("Файл cookies недоступен для снапшота IG session: %s", exc)
+        return []
+
+    session_lines: list[str] = []
+    seen: set[str] = set()
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized = _normalize_session_line(stripped)
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        session_lines.append(normalized)
+    return session_lines
+
+
+def _read_instagram_session_lines(cookiefile: str) -> list[str]:
+    """Снапшот IG session-кукис с защитой от среза середины чужого save.
+
+    cookiefile пишут и без нашего лока, НЕАТОМАРНО (`open(file, "w")` —
+    truncate + write, так закрывает YoutubeDL сам yt-dlp): снимок мог попасть
+    на середину записи и молча увидеть усечённый файл → пустой эталон →
+    защита вымывания выключена. Если из СУЩЕСТВУЮЩЕГО непустого файла не
+    прочитано ни одной session-строки — перечитываем ОДИН раз.
+    """
+    session_lines = _read_instagram_session_lines_once(cookiefile)
+    if session_lines:
+        return session_lines
+    try:
+        non_empty = os.path.getsize(cookiefile) > 0
+    except OSError:
+        non_empty = False
+    if non_empty:
+        return _read_instagram_session_lines_once(cookiefile)
+    return session_lines
+
+
+def _is_instagram_session_line(line: str) -> bool:
+    """Строка Netscape-файла — IG session-кука (предикат по 1-му и 6-му полю)."""
+    parts = line.split("\t", 6)
+    if len(parts) != 7:
+        return False
+    return _is_instagram_session_cookie(parts[0], parts[5])
+
+
+def _session_cookie_key(line: str) -> tuple[str, str, str] | None:
+    """Ключ кукисы из 7-полевой строки Netscape-файла: (домен, path, имя).
+
+    Префикс `#HttpOnly_` у домена снимается, домен приводится к lower,
+    ведущая точка снимается: одна и та же кукиса в разных текстовых формах
+    (`#HttpOnly_.instagram.com` и `.instagram.com`) даёт один ключ — текст
+    строк различается, а кукиса та же. Не-7-полевые и мусорные строки
+    (комментарии/шапка файла) — None.
+    """
+    if line.startswith(_HTTPONLY_PREFIX):
+        line = line[len(_HTTPONLY_PREFIX):]
+    elif line.startswith("#"):
+        return None
+    parts = line.split("\t")
+    if len(parts) != 7:
+        return None
+    domain, _domain_specified, path, _secure, _expires, name, _value = parts
+    return (domain.lower().removeprefix("."), path, name)
+
+
+def restore_instagram_session_cookies(
+    cookiefile: str | None, reference_lines: list[str]
+) -> int:
+    """Дописывает отсутствующие IG session-куки из reference_lines в cookiefile.
+
+    Возвращает число дописанных строк. Файл не трогается, если добавлять
+    нечего. Запись — APPEND-ONLY: файл открывается в режиме "a", всё
+    добавленное — одним `write`, без truncate и без подмены inode. Причина:
+    cookiefile пишут и без нашего лока — yt-dlp при закрытии YoutubeDL
+    сохраняет его НЕАТОМАРНО (truncate + write), админ-загрузка свежих кукис
+    пишет `open(path, "wb")`; перезапись целого файла (tmp + os.replace)
+    могла бы навсегда зафиксировать чужой усечённый снимок или откатить
+    только что загруженные кукисы. Дописывание в "a" этого не делает:
+    inode, права и текущее содержимое файла сохраняются, чужой недописанный
+    save не осиротеет.
+
+    Сравнение наличия — по КЛЮЧУ кукисы (домен/path/имя, см.
+    _session_cookie_key), а не по тексту строки: в файле может уже лежать
+    свежая строка той же кукисы в другой форме (`#HttpOnly_...`) — устаревшее
+    значение из эталона поверх неё не дописывается, дубликаты в самом
+    эталоне тоже схлопываются по ключу.
+
+    Пишет строки reference как есть — эталон уже нормализован в plain
+    читателем (без `#HttpOnly_`, иначе load_sessionid и cookie_monitor такие
+    строки пропускают). Фильтр по предикату IG session-кукис остаётся как
+    защита от мусора в reference. Если файл не оканчивается на "\\n"
+    (чужой писатель мог дописать строку между нашим чтением и append) —
+    перед добавленными строками prepend одного "\\n": в худшем случае лишняя
+    пустая строка, для Netscape-парсеров безвредна. Лок держит связку
+    read-decide-append. Любое исключение — logging.warning, никогда не
+    raise (fail-open: загрузка важнее мержа; падение append на
+    ENOSPC/EACCES — тоже warning).
+    """
+    if not cookiefile or not reference_lines:
+        return 0
+
+    missing: list[str] = []
+    with _INSTAGRAM_SESSION_LOCK:
+        try:
+            with open(cookiefile, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            current_lines = content.split("\n")
+            if current_lines and current_lines[-1] == "":
+                # Файл корректно заканчивается переводом строки — хвостовой
+                # пустой элемент после split не строка файла.
+                current_lines.pop()
+            present = {
+                key
+                for key in (_session_cookie_key(line) for line in current_lines)
+                if key is not None
+            }
+            seen: set[tuple[str, str, str]] = set()
+            for line in reference_lines:
+                if not _is_instagram_session_line(line):
+                    continue
+                key = _session_cookie_key(line)
+                if key is None or key in present or key in seen:
+                    continue
+                seen.add(key)
+                missing.append(line)
+            if not missing:
+                return 0
+
+            prefix = "\n" if content and not content.endswith("\n") else ""
+            with open(cookiefile, "a", encoding="utf-8") as handle:
+                handle.write(prefix + "".join(f"{line}\n" for line in missing))
+        except Exception as exc:  # noqa: BLE001 — fail-open: загрузка важнее мержа
+            logging.warning(
+                "Кукис Instagram sessionid не удалось восстановить в %s: %s",
+                cookiefile, exc,
+            )
+            return 0
+
+    logging.warning(
+        "Кукис Instagram sessionid восстановлены после yt-dlp: %d шт.", len(missing),
+    )
+    return len(missing)
+
+
 class VideoDownloader:
     """Класс для скачивания видео через yt-dlp."""
 
     def __init__(self, data_dir: str) -> None:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
+        # Эталон IG session-кукис: снимаем с итогового cookiefile ДО любого
+        # вызова yt-dlp (его write-back вымывает sessionid — см. restore).
+        self._instagram_session_ref: list[str] = []
+        self._last_instagram_restored = 0
         self.cookiefile = self._prepare_cookiefile()
+        self._instagram_session_ref = (
+            _read_instagram_session_lines(self.cookiefile) if self.cookiefile else []
+        )
 
     def reload_cookies(self) -> str | None:
         """Перечитывает файл cookies с диска (после обновления)."""
         self.cookiefile = self._prepare_cookiefile()
+        snapshot = (
+            _read_instagram_session_lines(self.cookiefile) if self.cookiefile else []
+        )
+        if (
+            not snapshot
+            and self._instagram_session_ref
+            and self.cookiefile
+            and os.path.exists(self.cookiefile)
+        ):
+            # Старый эталон был, а новый снапшот пуст при существующем файле:
+            # чаще всего снимок снова попал на середину не-атомарного save.
+            # Защита вымывания не выключается молча — оставляем СТАРЫЙ эталон;
+            # если session-куку вымыли по-настоящему, это видно по warning.
+            logging.warning("Снапшот IG session-кукис пуст, хотя файл кукис существует")
+            return self.cookiefile
+        self._instagram_session_ref = snapshot
         return self.cookiefile
 
     def _prepare_cookiefile(self) -> str | None:
@@ -980,6 +1222,12 @@ class VideoDownloader:
                 handle.write(f"{line}\n")
         logging.warning("Файл cookies санитизирован и сохранён: %s", sanitized_path)
         return sanitized_path
+
+    def _restore_instagram_session(self) -> None:
+        """Мержит эталон IG session-кукис обратно в cookiefile после yt-dlp."""
+        self._last_instagram_restored = restore_instagram_session_cookies(
+            self.cookiefile, self._instagram_session_ref
+        )
 
     @staticmethod
     def _is_vk_url(url: str) -> bool:
@@ -1063,7 +1311,9 @@ class VideoDownloader:
         opts["format"] = "bestvideo*+bestaudio/best"
         try:
             with YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=False)
+                info = ydl.extract_info(url, download=False)
+            self._restore_instagram_session()
+            return info
         except Exception as exc:
             if not _is_youtube_format_error(exc):
                 raise
@@ -1077,7 +1327,9 @@ class VideoDownloader:
             _time.sleep(3)
             try:
                 with YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(url, download=False)
+                    info = ydl.extract_info(url, download=False)
+                self._restore_instagram_session()
+                return info
             except Exception:
                 pass
             # Простой retry не помог — пробуем альтернативные player_client
@@ -1104,7 +1356,9 @@ class VideoDownloader:
                     "YouTube retry с player_client=%s: %s", clients, url,
                 )
                 with YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(url, download=download)
+                    info = ydl.extract_info(url, download=download)
+                self._restore_instagram_session()
+                return info
             except Exception:
                 continue
 
@@ -1120,7 +1374,9 @@ class VideoDownloader:
                 "YouTube retry без cookies, player_client=default: %s", url,
             )
             with YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=download)
+                info = ydl.extract_info(url, download=download)
+            self._restore_instagram_session()
+            return info
         except Exception:
             pass
 
@@ -1261,6 +1517,7 @@ class VideoDownloader:
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 file_path = ydl.prepare_filename(info)
+            self._restore_instagram_session()
         except Exception as exc:
             if not _is_youtube_format_error(exc):
                 raise
@@ -1275,6 +1532,7 @@ class VideoDownloader:
                 with YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     file_path = ydl.prepare_filename(info)
+                self._restore_instagram_session()
             except Exception:
                 # Простой retry не помог — пробуем fallback-клиенты
                 # с базовым форматом (без привязки к конкретному format_id).
@@ -1289,6 +1547,7 @@ class VideoDownloader:
                 )
                 with YoutubeDL(fallback_opts) as ydl_fb:
                     file_path = ydl_fb.prepare_filename(info)
+                self._restore_instagram_session()
         if info.get("_filename"):
             file_path = info["_filename"]
         # После постобработки расширение могло измениться — проверяем наличие файла
@@ -1334,6 +1593,7 @@ class VideoDownloader:
 
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+            self._restore_instagram_session()
 
             video_exts = {"mp4", "mov", "mkv", "webm", "m4v"}
             photo_exts = {"jpg", "jpeg", "png", "webp", "heic"}
@@ -1677,6 +1937,7 @@ class VideoDownloader:
         ydl_opts["extract_flat"] = True
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(channel_url, download=False)
+        self._restore_instagram_session()
         entries = info.get("entries") or []
         if not entries:
             return None
