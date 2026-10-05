@@ -1480,6 +1480,9 @@ class VideoDownloader:
                 media.append(photo)
         if not media:
             shutil.rmtree(work_dir, ignore_errors=True)
+        logging.info(
+            "Instagram photo fallback: получено фото %d шт (url=%s)", len(media), url,
+        )
         return media
 
     def get_direct_url(
