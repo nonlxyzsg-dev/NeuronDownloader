@@ -3,7 +3,7 @@
 Telegram-бот @NeuronDownloader_Bot: скачивает видео с YouTube/Instagram/VK/Rutube/TikTok и др. по ссылке с выбором качества (yt-dlp), доставляет файлом в Telegram с учётом лимитов (50 МБ стандарт / 2000 МБ локальный Bot API Server), перекодировкой под iPhone и кэшем file_id.
 
 ## Стек
-- Python 3.10 (прод — 3.10.12 venv), pyTelegramBotAPI 4.14 (polling), yt-dlp (обновляется cron-ом), FFmpeg/ffprobe (системные), SQLite (data/bot.db), python-dotenv.
+- Python 3.12 (прод — 3.12.3 venv на Ubuntu 24.04; код держать 3.10-совместимым), pyTelegramBotAPI 4.14 (polling), yt-dlp (обновляется cron-ом), FFmpeg/ffprobe (системные), SQLite (data/bot.db), python-dotenv.
 - Структура: `app/main.py` (точка входа, BotContext, сигналы, polling-цикл), `app/handlers/` (download — основной поток, admin, history, support), `app/downloader.py` (VideoDownloader: yt-dlp обёртка, ffmpeg-фиксы поворота/SAR/кодека), `app/storage.py` (SQLite, миграции в `_migrate_db`/`_init_db` — CREATE IF NOT EXISTS + ALTER), `app/download_queue.py` (DownloadManager: пул воркеров MAX_CONCURRENT_DOWNLOADS, 1 активная задача на юзера), `app/cookie_monitor.py`, `app/cleanup.py`, `app/config.py` (все env), `app/constants.py` (CB-префиксы, лимиты, эмодзи), `app/utils.py`, `app/keyboards.py`.
 
 ## Команды
@@ -18,7 +18,7 @@ Telegram-бот @NeuronDownloader_Bot: скачивает видео с YouTube/
 - Ключевые env: BOT_TOKEN, ADMIN_IDS, MAX_CONCURRENT_DOWNLOADS=2, MAX_QUEUE_SIZE=20, MAX_ACTIVE_TASKS_PER_USER=1, FREE_DOWNLOAD_LIMIT/WINDOW, DOWNLOAD_TIMEOUT_SECONDS (пол таймаута скачивания, дефолт 600; адаптив: total/256000 Б/с, потолок 7200с), TELEGRAM_API_SERVER_URL (локальный Bot API → лимит 2000 МБ).
 
 ## Деплой
-- Прод: jtesla1:/opt/NeuronDownloader (python 3.10.12 venv, systemd-юнит). Автодеплой: следит за origin/main, при новой ревизии подтягивает и рестартует юнит (≤5 мин). С jtesla1 push невозможен (read-only deploy key).
+- Прод: adminvps-nl 89.125.18.240:/opt/NeuronDownloader (SSH порт 2323, root; перенесён с jtesla1 05.10.2026, юнит neuron_bot, python 3.12.3 venv). Автодеплой: cron */5 autoupdate.sh — git pull по HTTPS + pip + рестарт юнита; плюс рестарт 03:30 и yt-dlp autoupdate 03:40. Локальный Bot API на 127.0.0.1:8082 (лимит 2000 МБ). Бот-лог: data/bot.log.
 - Рабочая копия разработки: ai-linux /home/ai/NeuronDownloader (владелец user ai). Push — SSH-ключом nonlxyzsg-dev.
 - Push в main = выкатка на прод в течение ~5 минут. Сломанное/непроверенное в main не пушить.
 
