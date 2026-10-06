@@ -1,11 +1,12 @@
-"""Фоновая проверка актуальности cookies для YouTube и Instagram."""
+"""Фоновая проверка актуальности cookies YouTube."""
+
+# Плановая проверка Instagram демонтирована (решение владельца 06.10.2026):
+# фоновые обращения к IG-эндпоинтам — причина банов аккаунта. Реактивные
+# IG-скачивания (downloader) и ручная админ-проверка кукис не затронуты.
 
 import logging
-import os
 import threading
-import time
 
-from app import instagram_api
 from app.config import (
     COOKIE_CHECK_INTERVAL_SECONDS,
     YOUTUBE_TEST_URL,
@@ -13,76 +14,9 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
-# Пауза перед повторной контентной пробой: одиночная неудача не алертит
-# (в бою бывали одиночные сбои эндпоинта при живых кукис).
-_RECHECK_DELAY_SECONDS = 60.0
-
-# Честная причина для алерта монитора: пользователь ошибку НЕ получал,
-# проверка плановая (текст заменил «Пользователь получил ошибку авторизации»,
-# который при фоновом мониторинге был ложным утверждением).
-_INSTAGRAM_ALERT_REASON = (
-    "Плановая контентная проверка дважды подряд не получила медиа — "
-    "cookies Instagram, вероятно, устарели."
-)
-
-
-def _instagram_sessionid_expired(cookiefile: str | None) -> bool | None:
-    """Истечение sessionid cookie для Instagram по timestamp в файле кукис.
-
-    Читает Netscape-файл построчно через общий парсер
-    instagram_api._parse_netscape_cookie_line (tab-split, 7 полей;
-    float-expires терпимо) — без cookiejar, который падает на малиформенном
-    файле. Строки `#HttpOnly_` — настоящие куки (соглашение curl/wget), а не
-    комментарии; expires нормализуется к секундам (ms → /1000). Если подходящих
-    строк sessionid несколько, решение принимается по МАКСИМАЛЬНОМУ expires_at
-    (та же политика «свежайшая строка побеждает», что и у load_sessionid).
-    True — по timestamp точно просрочена; False — по timestamp свежа (может быть
-    отозвана — это решает пинг); None — файла/строки нет или о сроке ничего
-    неизвестно (мусорный timestamp либо 0 — сессионная кука).
-    """
-    if not cookiefile or not os.path.exists(cookiefile):
-        return None
-    best_expires: int | None = None
-    try:
-        with open(cookiefile, "r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                parsed = instagram_api._parse_netscape_cookie_line(line.strip())
-                if parsed is None:
-                    continue
-                domain, name, expires_at = parsed
-                if name != "sessionid" or "instagram.com" not in domain.lower():
-                    continue
-                if expires_at is None:
-                    # Нечитаемый timestamp — данных о сроке нет, решает
-                    # живая проба; строка не кандидат.
-                    continue
-                if expires_at <= 0:
-                    # 0 (сессионная кука)/отрицательное — данных о сроке нет,
-                    # решение делает живая проверка.
-                    continue
-                if best_expires is None or expires_at > best_expires:
-                    best_expires = expires_at
-    except OSError as exc:
-        logger.debug("Не удалось прочитать cookies для Instagram-проверки: %s", exc)
-        return None
-    if best_expires is None:
-        return None  # sessionid не найдена (или срока нет ни у одной строки)
-    return best_expires < time.time()
-
-
-def _stat_mtime(path: str | None) -> float | None:
-    """mtime файла кукис; None — файла нет или stat не удался."""
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        return os.stat(path).st_mtime
-    except OSError as exc:
-        logger.debug("Cookie-check: не удалось снять mtime cookies: %s", exc)
-        return None
-
 
 class CookieHealthMonitor:
-    """Периодически проверяет, работают ли cookies YouTube и Instagram."""
+    """Периодически проверяет, работают ли cookies YouTube."""
 
     def __init__(self, bot, downloader) -> None:
         self._bot = bot
@@ -113,18 +47,13 @@ class CookieHealthMonitor:
     def _run_checks_once(self) -> None:
         """Один шаг цикла мониторинга.
 
-        Каждая проверка под своей обёрткой: непредвиденная ошибка логируется,
-        но не убивает daemon-поток, и проверка YouTube не гибнет от Instagram
-        (и наоборот).
+        Проверка под защитной обёрткой: непредвиденная ошибка логируется,
+        но не убивает daemon-поток.
         """
         try:
             self._check_youtube()
         except Exception:
             logger.exception("Cookie-check YouTube: непредвиденная ошибка, продолжаю")
-        try:
-            self._check_instagram()
-        except Exception:
-            logger.exception("Cookie-check Instagram: непредвиденная ошибка, продолжаю")
 
     def _check_youtube(self) -> None:
         from app.utils import notify_admin_cookies_expired
@@ -141,72 +70,3 @@ class CookieHealthMonitor:
                 # Другая ошибка (сеть, DNS и т.д.) — не считаем протуханием
                 logger.debug("Cookie-check YouTube: ошибка (не cookies): %s", exc)
 
-    def _check_instagram(self) -> None:
-        from app.utils import notify_admin_cookies_expired
-
-        cookiefile = getattr(self._downloader, "cookiefile", None)
-        # mtime фиксируем ДО любого чтения файла (load_sessionid и
-        # _instagram_sessionid_expired тоже его читают): подмена кукис в любой
-        # момент проверки должна подавить алерт, а не дать ложный «мёртв».
-        mtime_before = _stat_mtime(cookiefile)
-        sid = instagram_api.load_sessionid(cookiefile)
-        if sid is None:
-            # sessionid не найдена в файле cookies — Instagram не настроен.
-            logger.debug("Cookie-check Instagram: sessionid не найдена, пропуск")
-            return
-
-        # Локальный timestamp — лишь довесок к живой проверке: Instagram
-        # продлевает сессию sliding-renewal, поэтому серверное состояние
-        # главнее данных из файла.
-        expired = _instagram_sessionid_expired(cookiefile)
-
-        # Контентная проба: кукис живы, если эндпоинт реально отдаёт медиа
-        # поста-«яйца» (критерий владельца). Боевой факт 05.10.2026 17:25:
-        # одиночный «мёртв» от эндпоинта (401/403/404) при живых кукис —
-        # контент при
-        # этом качался; защита от такого сбоя — перепроба через 60 с, алерт
-        # только после двух неудач подряд.
-        alive = instagram_api.probe_media_alive(sid)
-        if alive is False:
-            # Одиночная неудача не алертит: в бою бывали одиночные сбои
-            # эндпоинта при живых кукис — перепроба через паузу.
-            logger.warning(
-                "Cookie-check Instagram: контентная проба не прошла, "
-                "перепроба через %s с",
-                int(_RECHECK_DELAY_SECONDS),
-            )
-            if self._stop_event.wait(_RECHECK_DELAY_SECONDS):
-                # Бот останавливается — алерт не слать.
-                return
-            alive = instagram_api.probe_media_alive(sid)
-        # mtime_before снят выше, до чтения файла — сверяем перед решением
-        # (подмена кукис в любой момент проверки подавляет алерт).
-        if _stat_mtime(cookiefile) != mtime_before:
-            logger.debug(
-                "Cookie-check Instagram: cookies обновились во время проверки, "
-                "перепроверю следующим циклом"
-            )
-            return
-        # Остаточный риск границы «404/пусто = мёртвые»: недоступный пост-«яйцо»
-        # при живой сессии даёт тот же 404 (или 200 с пустым items → None, и при
-        # просроченном локальном timestamp сработает F4-ветка). Если алерт
-        # «дважды подряд» повторяется, а Instagram фактически работает, — первым
-        # делом проверить руками доступность instagram.com/p/BsOGulcndj-/.
-        if alive is True:
-            # Сервер подтвердил живость — даже если локальный timestamp старше.
-            logger.debug("Cookie-check Instagram: OK (контентная проба)")
-        elif alive is False:
-            logger.warning(
-                "Cookie-check Instagram: контентная проба не прошла дважды подряд"
-            )
-            notify_admin_cookies_expired(self._bot, "Instagram", _INSTAGRAM_ALERT_REASON)
-        elif expired is True:
-            logger.warning(
-                "Cookie-check Instagram: sessionid просрочена (по файлу), "
-                "контентную пробу провести не удалось"
-            )
-            notify_admin_cookies_expired(self._bot, "Instagram", _INSTAGRAM_ALERT_REASON)
-        else:
-            logger.debug(
-                "Cookie-check Instagram: статус неизвестен (сеть/rate-limit), без алерта"
-            )

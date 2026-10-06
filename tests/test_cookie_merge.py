@@ -6,10 +6,9 @@ _is_instagram_session_cookie, _read_instagram_session_lines,
 restore_instagram_session_cookies.
 
 Семантика снапшота/мержа — PLAIN: строка с префиксом `#HttpOnly_` попадает
-в merged-файл БЕЗ префикса. Причина: потребители (app.instagram_api.load_sessionid,
-app.cookie_monitor._instagram_sessionid_expired) пропускают `#`-строки, и
-вербатим-строка была бы для них невидима (алерты продолжались бы).
-Интеграционные пробы — именно на этих потребителях.
+в merged-файл БЕЗ префикса. Причина: потребитель
+app.instagram_api.load_sessionid пропускает `#`-строки, и вербатим-строка
+была бы для него невидима. Интеграционные пробы — именно на этом потребителе.
 """
 
 import http.cookiejar
@@ -23,7 +22,6 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 import app.downloader as downloader_module
-from app.cookie_monitor import _instagram_sessionid_expired
 from app.downloader import (
     VideoDownloader,
     _is_instagram_session_cookie,
@@ -131,9 +129,8 @@ with tempfile.TemporaryDirectory() as temp_dir:
     check(sid_merged.split("\t")[6] == "synthetic-sid-A")
     check(sid_merged.split("\t")[4] == "1999999999")
 
-    # НОВЫЕ интеграционные пробы главных потребителей (ради них и снимается префикс).
+    # Интеграционная проба потребителя (ради него и снимается префикс).
     check(load_sessionid(washed_path) == "synthetic-sid-A")
-    check(_instagram_sessionid_expired(washed_path) is False)
 
     jar = http.cookiejar.MozillaCookieJar(washed_path)
     jar.load()

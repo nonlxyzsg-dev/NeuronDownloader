@@ -1461,13 +1461,13 @@ def register_admin_handlers(ctx) -> None:
                 else:
                     instagram_line = (
                         "\n📷 Instagram: проверить не удалось "
-                        "(сеть или rate-limit — повторится фоновым монитором)."
+                        "(сеть или rate-limit — повтори проверку вручную позже)."
                     )
         except Exception:
             logger.exception("Проверка Instagram-sessionid не удалась")
             instagram_line = (
                 "\n📷 Instagram: проверить не удалось "
-                "(сеть или rate-limit — повторится фоновым монитором)."
+                "(сеть или rate-limit — повтори проверку вручную позже)."
             )
 
         # Cookies рабочие — обрабатываем отложенные загрузки всех платформ

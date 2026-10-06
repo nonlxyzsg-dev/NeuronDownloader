@@ -81,10 +81,10 @@ with tempfile.TemporaryDirectory() as temp_dir:
     check(instagram_api.load_sessionid(os.path.join(temp_dir, "missing.txt")) is None)
     check(instagram_api.load_sessionid(None) is None)
 
-    # 4а. Политика «свежайшая строка побеждает» (max expires_at), как в
-    #     cookie_monitor._instagram_sessionid_expired: несколько instagram-
-    #     sessionid строк → победитель по максимальному expires, порядок строк
-    #     не важен; мусорный expires у строки — пропуск, не падение.
+    # 4а. Политика «свежайшая строка побеждает» (max expires_at): несколько
+    #     instagram-sessionid строк → победитель по максимальному expires,
+    #     порядок строк не важен; мусорный expires у строки — пропуск, не
+    #     падение.
     def _sid_line(expires_field: str, sid_value: str) -> str:
         return f".instagram.com\tTRUE\t/\tTRUE\t{expires_field}\tsessionid\t{sid_value}\n"
 
