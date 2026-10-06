@@ -22,6 +22,12 @@ IG_APP_ID = "936619743392459"
 # (accounts/current_user → 403, web_profile_info → 429, проверено живьём).
 _PING_SHORTCODE = "BsOGulcndj-"
 
+# Префикс HttpOnly-куки в Netscape-файле (соглашение curl/wget; такую же
+# константу имеет мерж-логика в downloader.py — объединять нельзя, там цикл
+# импортов). Файл cookies.txt пишут два писателя: загрузка владельцем даёт
+# HttpOnly-формат, write-back yt-dlp — plain; читатели обязаны есть оба.
+_HTTPONLY_PREFIX = "#HttpOnly_"
+
 _ENCODING_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 _API_BASE = "https://i.instagram.com"
@@ -75,14 +81,45 @@ def extract_shortcode(url: str) -> str | None:
     return match.group(1)
 
 
+def _parse_netscape_cookie_line(stripped: str) -> tuple[str, str, int | None] | None:
+    """Строка Netscape-файла → (domain, name, expires_seconds | None), либо None.
+
+    Строки с `#HttpOnly_` — настоящие куки (соглашение curl/wget), префикс
+    срезается; прочие `#`-строки — комментарии (None). Полей не ровно 7 → None.
+    expires нормализуется в секунды: значения > 1e11 — миллисекунды (так пишет
+    часть экспортёров), делятся на 1000; мусор (не float/int) → expires=None.
+    0/отрицательное возвращаются КАК ЕСТЬ — политика (сессионная кука без
+    срока) решается вызывающим; None — только нечитаемый мусор.
+    """
+    if stripped.startswith(_HTTPONLY_PREFIX):
+        stripped = stripped[len(_HTTPONLY_PREFIX):]
+    if not stripped or stripped.startswith("#"):
+        return None
+    parts = stripped.split("\t")
+    if len(parts) != 7:
+        return None
+    domain, _flag, _path, _secure, expires, name, _value = parts
+    try:
+        expires_at = int(float(expires))
+    except (ValueError, OverflowError):
+        return domain, name, None
+    if expires_at > 10**11:
+        expires_at //= 1000  # миллисекунды → секунды
+    return domain, name, expires_at
+
+
 def load_sessionid(cookiefile: str | None) -> str | None:
     """Читает sessionid домена instagram.com из Netscape-файла.
 
-    Файл парсится построчно и tab-split (7 полей). Подходящих строк sessionid
-    несколько → побеждает строка с МАКСИМАЛЬНЫМ expires_at (та же политика
-    «свежайшая строка побеждает», что у _instagram_sessionid_expired в
-    cookie_monitor): expires парсится как int(float(...)), строка с нечитаемым
-    expires пропускается, а не валит чтение. Файла/подходящих строк нет → None.
+    Файл парсится построчно и tab-split (7 полей). Строки `#HttpOnly_` —
+    настоящие куки, парсятся как обычные; expires приводится к секундам
+    (ms → /1000). Подходящих строк sessionid несколько → побеждает строка с
+    МАКСИМАЛЬНЫМ expires_at (та же политика «свежайшая строка побеждает», что у
+    _instagram_sessionid_expired в cookie_monitor): expires парсится как
+    int(float(...)), строка с нечитаемым expires пропускается, а не валит
+    чтение. 0/отрицательное — сессионная кука без срока: валидный кандидат,
+    проигрывает любой строке с положительным сроком (прежняя политика).
+    Файла/подходящих строк нет → None.
     """
     if not cookiefile or not os.path.exists(cookiefile):
         return None
@@ -92,26 +129,27 @@ def load_sessionid(cookiefile: str | None) -> str | None:
         with open(cookiefile, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
+                parsed = _parse_netscape_cookie_line(stripped)
+                if parsed is None:
                     continue
-                parts = stripped.split("\t")
-                if len(parts) != 7:
-                    continue
-                domain, _flag, _path, _secure, expires, name, value = parts
+                domain, name, expires_at = parsed
                 if name != "sessionid" or "instagram.com" not in domain.lower():
                     continue
-                value = value.strip()
+                if expires_at is None:
+                    # Нечитаемый expires (abc/inf/…) — данных о сроке нет,
+                    # строка не кандидат «свежайшей».
+                    continue
+                # Полей ровно 7 (гарантия парсера), префикс на число полей не
+                # влияет — значение в последнем поле.
+                value = stripped.split("\t")[6].strip()
                 if not value or not value.isprintable():
                     # Значение с непечатаемыми символами (CR/LF внутри) — не
                     # кандидат: http.client бросит ValueError при сборке
                     # Cookie-заголовка на ровном месте.
                     continue
-                try:
-                    expires_at = int(float(expires))
-                except (ValueError, OverflowError):
-                    # Мусорный или непредставимый timestamp — у этой строки
-                    # данных о сроке нет, чтение не валит.
-                    continue
+                # 0/отрицательное — сессионная кука без срока: валидный
+                # кандидат, проигрывает любой строке с положительным сроком
+                # (прежняя политика).
                 if best_expires is None or expires_at > best_expires:
                     best_expires = expires_at
                     best_value = value

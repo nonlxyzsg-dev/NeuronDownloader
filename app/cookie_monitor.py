@@ -29,10 +29,13 @@ _INSTAGRAM_ALERT_REASON = (
 def _instagram_sessionid_expired(cookiefile: str | None) -> bool | None:
     """Истечение sessionid cookie для Instagram по timestamp в файле кукис.
 
-    Читает Netscape-файл построчно (tab-split, 7 полей; float-expires терпимо) —
-    без cookiejar, который падает на малиформенном файле. Если подходящих строк
-    sessionid несколько, решение принимается по МАКСИМАЛЬНОМУ expires_at (та же
-    политика «свежайшая строка побеждает», что и у load_sessionid).
+    Читает Netscape-файл построчно через общий парсер
+    instagram_api._parse_netscape_cookie_line (tab-split, 7 полей;
+    float-expires терпимо) — без cookiejar, который падает на малиформенном
+    файле. Строки `#HttpOnly_` — настоящие куки (соглашение curl/wget), а не
+    комментарии; expires нормализуется к секундам (ms → /1000). Если подходящих
+    строк sessionid несколько, решение принимается по МАКСИМАЛЬНОМУ expires_at
+    (та же политика «свежайшая строка побеждает», что и у load_sessionid).
     True — по timestamp точно просрочена; False — по timestamp свежа (может быть
     отозвана — это решает пинг); None — файла/строки нет или о сроке ничего
     неизвестно (мусорный timestamp либо 0 — сессионная кука).
@@ -43,24 +46,19 @@ def _instagram_sessionid_expired(cookiefile: str | None) -> bool | None:
     try:
         with open(cookiefile, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
+                parsed = instagram_api._parse_netscape_cookie_line(line.strip())
+                if parsed is None:
                     continue
-                parts = stripped.split("\t")
-                if len(parts) != 7:
-                    continue
-                domain, _flag, _path, _secure, expires, name, _value = parts
+                domain, name, expires_at = parsed
                 if name != "sessionid" or "instagram.com" not in domain.lower():
                     continue
-                try:
-                    expires_at = int(float(expires))
-                except (ValueError, OverflowError):
-                    # Нечитаемый или непредставимый timestamp (мусор, inf) —
-                    # у этой строки данных о сроке нет.
+                if expires_at is None:
+                    # Нечитаемый timestamp — данных о сроке нет, решает
+                    # живая проба; строка не кандидат.
                     continue
                 if expires_at <= 0:
-                    # По политике Netscape 0 — сессионная кука без срока, она НЕ
-                    # просрочена; данных о сроке нет — решает живой пинг.
+                    # 0 (сессионная кука)/отрицательное — данных о сроке нет,
+                    # решение делает живая проверка.
                     continue
                 if best_expires is None or expires_at > best_expires:
                     best_expires = expires_at
