@@ -18,8 +18,8 @@ from app.config import USER_AGENT
 
 IG_APP_ID = "936619743392459"
 # Публичный пост-«яйцо» (самый известный пост Instagram) — фиксированная цель
-# дешёвой проверки живости sessionid (accounts/current_user → 403,
-# web_profile_info → 429, проверено живьём).
+# контентной пробы живости sessionid: эндпоинт реально отдаёт медиа поста
+# (accounts/current_user → 403, web_profile_info → 429, проверено живьём).
 _PING_SHORTCODE = "BsOGulcndj-"
 
 _ENCODING_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -192,6 +192,36 @@ def ping_session(sessionid: str | None) -> bool | None:
         return False
     if status == 200 and payload is not None:
         return True
+    return None
+
+
+def probe_media_alive(sessionid: str | None) -> bool | None:
+    """Контентная проба живости sessionid: пост-«яйцо» реально отдаёт медиа.
+
+    True — 200 и непустой items (кукис реально тянут контент);
+    False — 401/403/404 (сессия отклонена; живьём 06.10.2026: мёртвый sid → 404
+    без JSON);
+    None — sid нет, сетевая неудача (0), 429/5xx, 200 без разобранного JSON
+    (login-редирект отдаёт HTML-страницу) или 200-JSON с пустым/нестрочным
+    items (яйцо недоступно при живой сессии — это НЕ смерть кукис, алертить
+    нельзя).
+    """
+    if not sessionid:
+        return None
+    try:
+        pk = shortcode_to_pk(_PING_SHORTCODE)
+    except ValueError:
+        return None
+    status, payload = api_get_status(f"/api/v1/media/{pk}/info/", sessionid)
+    if status in (401, 403, 404):
+        return False
+    if status == 200 and isinstance(payload, dict):
+        items = payload.get("items")
+        if isinstance(items, list) and items:
+            return True
+        logging.debug(
+            "Instagram API: проба 200 без непустого items (пост-яйцо недоступен?)"
+        )
     return None
 
 

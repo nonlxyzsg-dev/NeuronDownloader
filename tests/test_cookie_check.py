@@ -1,7 +1,8 @@
 """Standalone-проверки куки-монитора Instagram (полностью офлайн, сеть не трогаем).
 
-Кукис в файлах — синтетические. ping_session проверяется с подменой транспорта
-(monkeypatch instagram_api.api_get_status), реальных запросов нет.
+Кукис в файлах — синтетические. ping_session и probe_media_alive проверяются
+с подменой транспорта (monkeypatch instagram_api.api_get_status), реальных
+запросов нет.
 """
 
 import os
@@ -164,6 +165,50 @@ finally:
     instagram_api.api_get_status = _original_api_get_status
 
 
+# 2b. probe_media_alive: контентная проба по посту-«яйцу» (транспорт подменён).
+try:
+    instagram_api.api_get_status = _fake_api_get_status
+    calls.clear()
+
+    # P1 (позитив): 200 + непустой items → True; путь запроса — ровно
+    # эндпоинт поста-«яйца».
+    _set_response((200, {"items": [{"pk": 1}]}))
+    check(instagram_api.probe_media_alive("synthetic-sid") is True)
+    _egg_path = f"/api/v1/media/{instagram_api.shortcode_to_pk('BsOGulcndj-')}/info/"
+    check(calls == [(_egg_path, "synthetic-sid")])
+
+    # P2 (позитив): 401/403/404 → False (боевая сигнатура мёртвых кукис — 404).
+    for code in (401, 403, 404):
+        _set_response((code, None))
+        check(instagram_api.probe_media_alive("synthetic-sid") is False)
+
+    # N1 (негатив-похожий): 200 без разобранного JSON → None. Это подпись
+    # login-редиректа (urllib следует 302, HTML не парсится) — тот самый
+    # класс, что алертил ложно.
+    _set_response((200, None))
+    check(instagram_api.probe_media_alive("synthetic-sid") is None)
+
+    # N2 (негатив-похожий): 200-JSON без непустого list-items → None: сессия
+    # ВАЛИДирована (иначе был бы 401/403/404), содержимого нет — не смерть
+    # кукис. Пустой dict / пустой items / нестрочный items.
+    for payload in ({}, {"items": []}, {"items": "мусор"}):
+        _set_response((200, payload))
+        check(instagram_api.probe_media_alive("synthetic-sid") is None)
+
+    # N3: сетевая неудача / rate-limit / 5xx → None.
+    for status_code, payload in ((0, None), (429, None), (503, None)):
+        _set_response((status_code, payload))
+        check(instagram_api.probe_media_alive("synthetic-sid") is None)
+
+    # N4: sid=None → None, запрос НЕ выполнялся.
+    calls.clear()
+    _set_response((200, {"items": [{"pk": 1}]}))
+    check(instagram_api.probe_media_alive(None) is None)
+    check(calls == [])
+finally:
+    instagram_api.api_get_status = _original_api_get_status
+
+
 # 3. load_sessionid: смок (полное покрытие — в tests/test_instagram_photos.py).
 with tempfile.TemporaryDirectory() as temp_dir:
     sid_file = os.path.join(temp_dir, "cookies_sid.txt")
@@ -176,33 +221,60 @@ with tempfile.TemporaryDirectory() as temp_dir:
     check(instagram_api.load_sessionid(None) is None)
 
 
-# 4. CookieHealthMonitor._check_instagram: порядок sid → timestamp → ping,
-#    тяжёлый yt-dlp get_info для Instagram больше не зовётся (сеть не трогаем).
+# 4. CookieHealthMonitor._check_instagram: порядок sid → timestamp → проба
+#    (probe_media_alive). Одиночная неудача не алертит — перепроба через
+#    _RECHECK_DELAY_SECONDS (в тестах = 0, восстановить в finally), алерт
+#    только после двух подряд; mtime-инвариант и F4-довесок сохранены.
 class _StubDownloader:
     def __init__(self, cookiefile: str | None) -> None:
         self.cookiefile = cookiefile
 
 
-alerts: list[str] = []
-pings: list[str | None] = []
+alerts: list[tuple[str, str | None]] = []
+probes: list[str | None] = []
+
+# Сетевой предохранитель секции 4: проба патчится, но регресс реализации
+# к ping_session увёл бы тест в реальный запрос к i.instagram.com. На место
+# ping_session ставим маркер — звонок пишется в отдельный список, сеть не
+# трогается (восстанавливается в finally секции 4).
+ping_calls: list[str | None] = []
 
 
-def _make_ping(result: bool | None):
-    def ping(sid: str | None) -> bool | None:
-        pings.append(sid)
-        return result
-    return ping
+def _marker_ping_session(sid: str | None) -> bool | None:
+    ping_calls.append(sid)
+    return None
 
 
-def _fake_notify(bot, platform: str) -> None:
-    alerts.append(platform)
+def _make_probe(results: list[bool | None]):
+    state = {"next": 0}
+
+    def probe(sid: str | None) -> bool | None:
+        probes.append(sid)
+        index = state["next"]
+        state["next"] += 1
+        if index < len(results):
+            return results[index]
+        return results[-1]
+
+    return probe
+
+
+def _fake_notify(bot, platform: str, reason: str | None = None) -> None:
+    alerts.append((platform, reason))
 
 
 _original_notify = app_utils.notify_admin_cookies_expired
 _original_load = cookie_monitor.instagram_api.load_sessionid
+_original_probe = cookie_monitor.instagram_api.probe_media_alive
 _original_ping = cookie_monitor.instagram_api.ping_session
+_original_recheck_delay = cookie_monitor._RECHECK_DELAY_SECONDS
 try:
     app_utils.notify_admin_cookies_expired = _fake_notify
+    # Перепроба в тестах мгновенная (реальная пауза — 60 с).
+    cookie_monitor._RECHECK_DELAY_SECONDS = 0
+    # Сетевой предохранитель: ping_session подменяется маркером на все кейсы
+    # секции 4 (регресс к статус-пингу не должен дать реальный сетевой запрос).
+    cookie_monitor.instagram_api.ping_session = _marker_ping_session
 
     with tempfile.TemporaryDirectory() as temp_dir:
         fresh_file = os.path.join(temp_dir, "m_fresh.txt")
@@ -210,96 +282,149 @@ try:
         stale_file = os.path.join(temp_dir, "m_stale.txt")
         _write_netscape(stale_file, [_sid_line("1000000000")])
 
-        # (а) sessionid не найдена → ни пинга, ни алерта.
+        # (а) sessionid не найдена → ни пробы, ни алерта.
         cookie_monitor.instagram_api.load_sessionid = lambda path: None
-        cookie_monitor.instagram_api.ping_session = _make_ping(False)
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False])
         monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(pings == [] and alerts == [])
+        check(probes == [] and alerts == [])
 
-        # (б) живой sid → ping, алерта нет.
+        # (б) D1: проба [True] → ровно 1 вызов пробы, алертов нет.
         cookie_monitor.instagram_api.load_sessionid = lambda path: "synthetic-sid"
-        cookie_monitor.instagram_api.ping_session = _make_ping(True)
+        probes.clear()
+        alerts.clear()
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([True])
         monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(pings == ["synthetic-sid"] and alerts == [])
+        check(probes == ["synthetic-sid"] and alerts == [])
 
-        # (в) мёртвый sid (ping=False) → алерт.
+        # (в) D3: [False, False] → ровно 2 вызова, ровно 1 алерт; причина
+        #     честная (плановая проверка), без «Пользователь получил ошибку».
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        cookie_monitor.instagram_api.ping_session = _make_ping(False)
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False, False])
         monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(pings == ["synthetic-sid"] and alerts == ["Instagram"])
+        check(probes == ["synthetic-sid", "synthetic-sid"])
+        check(len(alerts) == 1 and alerts[0][0] == "Instagram")
+        reason_text = (alerts[0][1] or "").lower()
+        check("плановая" in reason_text and "проверка" in reason_text)
+        check("Пользователь получил ошибку" not in (alerts[0][1] or ""))
 
-        # (г) статус неизвестен (сеть/rate-limit) → без алерта.
+        # (г) D4: [None] → ровно 1 вызов (без перепробы), алертов нет.
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        cookie_monitor.instagram_api.ping_session = _make_ping(None)
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([None])
         monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(pings == ["synthetic-sid"] and alerts == [])
+        check(probes == ["synthetic-sid"] and alerts == [])
 
-        # (д) просрочена по файлу + живую проверку провести не удалось → алерт (F4).
+        # (д) D2: [False, True] → ровно 2 вызова, алертов нет (перепроба спасла).
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        cookie_monitor.instagram_api.ping_session = _make_ping(None)
-        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False, True])
+        monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(alerts == ["Instagram"] and pings == ["synthetic-sid"])
+        check(probes == ["synthetic-sid", "synthetic-sid"] and alerts == [])
 
-        # (е) timestamp просрочен, но сервер подтвердил живость → БЕЗ алерта (F4):
-        # серверное состояние главнее локального файла, sliding-renewal.
+        # (е) D5: [False, None] → 2 вызова, алертов нет (вторая проба не
+        #     подтвердила смерть).
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        cookie_monitor.instagram_api.ping_session = _make_ping(True)
-        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False, None])
+        monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
         monitor._check_instagram()
-        check(alerts == [] and pings == ["synthetic-sid"])
+        check(probes == ["synthetic-sid", "synthetic-sid"] and alerts == [])
 
-        # (ж) мёртв по пингу при просроченном timestamp → алерт по пингу (F4).
+        # (ж) D6: бот останавливается до решения → 1 вызов пробы, алертов нет
+        #     (остановка бота глушит алерт).
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        cookie_monitor.instagram_api.ping_session = _make_ping(False)
-        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False])
+        monitor = CookieHealthMonitor(None, _StubDownloader(fresh_file))
+        monitor._stop_event.set()
         monitor._check_instagram()
-        check(alerts == ["Instagram"] and pings == ["synthetic-sid"])
+        check(probes == ["synthetic-sid"] and alerts == [])
 
-        # (и) F5: файл подменили ВО ВРЕМЯ пинга (mtime изменился) → алерт подавлен,
-        # даже если пинг ответил «мёртв» (ответ относится уже к другой куке).
+        # (и) D7: обе пробы [False, False], но файл подменили ВО ВРЕМЯ пробы
+        #     (mtime изменился) → алерт ПОДАВЛЕН (инвариант подмены кукис
+        #     сохранён: ответ пробы относится уже к другой куке).
+        probes.clear()
         alerts.clear()
-        pings.clear()
+        os.utime(stale_file)  # свежий mtime, отличимый от метки подмены ниже
 
-        def _ping_and_swap_file(sid: str | None) -> bool | None:
-            pings.append(sid)
+        def _probe_and_swap_file(sid: str | None) -> bool | None:
+            probes.append(sid)
             os.utime(stale_file, (1000000000.0, 1000000000.0))
             return False
 
-        cookie_monitor.instagram_api.ping_session = _ping_and_swap_file
+        cookie_monitor.instagram_api.probe_media_alive = _probe_and_swap_file
         monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
         monitor._check_instagram()
-        check(alerts == [] and pings == ["synthetic-sid"])
+        check(alerts == [])
 
-        # (к) T2-3: файл обновился МЕЖДУ load_sessionid и пингом → алерт тоже
-        #     подавлен (mtime_before снимается до load_sessionid, ответ пинга
-        #     относится уже к другой куке).
+        # (и-b) D7b: подмена кукис внутри ВТОРОЙ пробы (на окне перепробы
+        #     действует тот же mtime-инвариант) → алерт ПОДАВЛЕН, проб ровно 2.
+        probes.clear()
         alerts.clear()
-        pings.clear()
-        os.utime(stale_file)  # свежий mtime, отличный от метки кейса (и)
+        os.utime(stale_file)  # свежий mtime, отличимый от метки подмены ниже
+
+        def _probe_swap_on_second(sid: str | None) -> bool | None:
+            probes.append(sid)
+            if len(probes) == 2:
+                os.utime(stale_file, (1000000000.0, 1000000000.0))
+            return False
+
+        cookie_monitor.instagram_api.probe_media_alive = _probe_swap_on_second
+        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        monitor._check_instagram()
+        check(alerts == [] and probes == ["synthetic-sid", "synthetic-sid"])
+
+        # (й) T2-3: файл обновился МЕЖДУ load_sessionid и пробой → алерт тоже
+        #     подавлен (mtime_before снимается до load_sessionid, ответ пробы
+        #     относится уже к другой куке).
+        probes.clear()
+        alerts.clear()
+        os.utime(stale_file)
 
         def _load_and_swap_file(path):
             os.utime(stale_file, (1000000000.0, 1000000000.0))
             return "synthetic-sid"
 
         cookie_monitor.instagram_api.load_sessionid = _load_and_swap_file
-        cookie_monitor.instagram_api.ping_session = _make_ping(False)
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([False, False])
         monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
         monitor._check_instagram()
-        check(alerts == [] and pings == ["synthetic-sid"])
+        check(alerts == [])
+
+        # (к) D8: проба [None] + файл с просроченным timestamp → 1 алерт
+        #     (F4: довесок по локальному файлу сохранён).
+        cookie_monitor.instagram_api.load_sessionid = lambda path: "synthetic-sid"
+        probes.clear()
+        alerts.clear()
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([None])
+        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        monitor._check_instagram()
+        check(len(alerts) == 1 and probes == ["synthetic-sid"])
+
+        # (л) D9: проба [True] + файл с просроченным timestamp → БЕЗ алерта
+        #     (серверное состояние главнее локального файла, sliding-renewal).
+        probes.clear()
+        alerts.clear()
+        cookie_monitor.instagram_api.probe_media_alive = _make_probe([True])
+        monitor = CookieHealthMonitor(None, _StubDownloader(stale_file))
+        monitor._check_instagram()
+        check(alerts == [] and probes == ["synthetic-sid"])
+
+        # Сетевой предохранитель секции 4: ни в одном кейсе реальный
+        # ping_session не вызывался (маркер-список пуст).
+        check(ping_calls == [])
 finally:
     app_utils.notify_admin_cookies_expired = _original_notify
     cookie_monitor.instagram_api.load_sessionid = _original_load
+    cookie_monitor.instagram_api.probe_media_alive = _original_probe
     cookie_monitor.instagram_api.ping_session = _original_ping
+    cookie_monitor._RECHECK_DELAY_SECONDS = _original_recheck_delay
 
 
 # 5. F6: защитные обёртки цикла — исключение в проверке не убивает шаг
@@ -324,6 +449,11 @@ def _raising_load_sessionid(path: str | None) -> str | None:
 _original_load_for_f6 = cookie_monitor.instagram_api.load_sessionid
 try:
     cookie_monitor.instagram_api.load_sessionid = _raising_load_sessionid
+    # Патч notify возвращаем и здесь: без него финальный ассерт alerts == []
+    # вакуумный — список к этому моменту никто не наполняет, и он проходил бы
+    # даже при реальном алерте.
+    app_utils.notify_admin_cookies_expired = _fake_notify
+    alerts.clear()
     f6_monitor = CookieHealthMonitor(None, _RaisingDownloader())
 
     raised = False
@@ -341,8 +471,50 @@ try:
     # до решения об алерте).
     check(alerts == [])
 finally:
+    app_utils.notify_admin_cookies_expired = _original_notify
     cookie_monitor.instagram_api.load_sessionid = _original_load_for_f6
     cookie_monitor.instagram_api.load_sessionid = _original_load
-    cookie_monitor.instagram_api.ping_session = _original_ping
+
+
+# 6. Тексты уведомлений notify_admin_cookies_expired: реальная функция со
+#    stub-ботом; _cookies_alert_last чистится перед кейсом, platform-ключи
+#    различаются, чтобы кулдаун не съел второй кейс.
+class _StubBot:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    def send_message(self, chat_id, text, parse_mode=None) -> None:
+        self.sent.append(text)
+
+
+_original_admin_ids = app_utils.ADMIN_IDS
+_saved_alert_last = dict(app_utils._cookies_alert_last)
+try:
+    app_utils.ADMIN_IDS = [424242]
+
+    # T1: вызов с двумя аргументами (как YouTube и handlers) → прежний текст
+    # не сломан.
+    t1_bot = _StubBot()
+    app_utils._cookies_alert_last.clear()
+    app_utils.notify_admin_cookies_expired(t1_bot, "YouTubeT1")
+    check(len(t1_bot.sent) == 1)
+    check("Пользователь получил ошибку" in t1_bot.sent[0])
+    check("протухли" in t1_bot.sent[0])
+
+    # T2: вызов с reason из cookie_monitor → честный текст про плановую
+    # проверку, без «Пользователь получил ошибку».
+    t2_bot = _StubBot()
+    app_utils._cookies_alert_last.clear()
+    app_utils.notify_admin_cookies_expired(
+        t2_bot, "InstagramT2", cookie_monitor._INSTAGRAM_ALERT_REASON
+    )
+    check(len(t2_bot.sent) == 1)
+    check("плановая проверка не прошла" in t2_bot.sent[0])
+    check("Пользователь получил ошибку" not in t2_bot.sent[0])
+    check(cookie_monitor._INSTAGRAM_ALERT_REASON in t2_bot.sent[0])
+finally:
+    app_utils.ADMIN_IDS = _original_admin_ids
+    app_utils._cookies_alert_last.clear()
+    app_utils._cookies_alert_last.update(_saved_alert_last)
 
 print(f"TESTS OK: {checks} проверок")

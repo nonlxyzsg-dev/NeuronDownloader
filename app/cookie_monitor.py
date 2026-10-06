@@ -13,6 +13,18 @@ from app.config import (
 
 logger = logging.getLogger(__name__)
 
+# Пауза перед повторной контентной пробой: одиночная неудача не алертит
+# (в бою бывали одиночные сбои эндпоинта при живых кукис).
+_RECHECK_DELAY_SECONDS = 60.0
+
+# Честная причина для алерта монитора: пользователь ошибку НЕ получал,
+# проверка плановая (текст заменил «Пользователь получил ошибку авторизации»,
+# который при фоновом мониторинге был ложным утверждением).
+_INSTAGRAM_ALERT_REASON = (
+    "Плановая контентная проверка дважды подряд не получила медиа — "
+    "cookies Instagram, вероятно, устарели."
+)
+
 
 def _instagram_sessionid_expired(cookiefile: str | None) -> bool | None:
     """Истечение sessionid cookie для Instagram по timestamp в файле кукис.
@@ -150,27 +162,52 @@ class CookieHealthMonitor:
         # главнее данных из файла.
         expired = _instagram_sessionid_expired(cookiefile)
 
-        # Дешёвая живая проверка: 1 запрос к приватному API (без yt-dlp).
-        # mtime_before снят выше, до чтения файла — сверяем после пинга.
-        alive = instagram_api.ping_session(sid)
+        # Контентная проба: кукис живы, если эндпоинт реально отдаёт медиа
+        # поста-«яйца» (критерий владельца). Боевой факт 05.10.2026 17:25:
+        # одиночный «мёртв» от эндпоинта (401/403/404) при живых кукис —
+        # контент при
+        # этом качался; защита от такого сбоя — перепроба через 60 с, алерт
+        # только после двух неудач подряд.
+        alive = instagram_api.probe_media_alive(sid)
+        if alive is False:
+            # Одиночная неудача не алертит: в бою бывали одиночные сбои
+            # эндпоинта при живых кукис — перепроба через паузу.
+            logger.warning(
+                "Cookie-check Instagram: контентная проба не прошла, "
+                "перепроба через %s с",
+                int(_RECHECK_DELAY_SECONDS),
+            )
+            if self._stop_event.wait(_RECHECK_DELAY_SECONDS):
+                # Бот останавливается — алерт не слать.
+                return
+            alive = instagram_api.probe_media_alive(sid)
+        # mtime_before снят выше, до чтения файла — сверяем перед решением
+        # (подмена кукис в любой момент проверки подавляет алерт).
         if _stat_mtime(cookiefile) != mtime_before:
             logger.debug(
                 "Cookie-check Instagram: cookies обновились во время проверки, "
                 "перепроверю следующим циклом"
             )
             return
+        # Остаточный риск границы «404/пусто = мёртвые»: недоступный пост-«яйцо»
+        # при живой сессии даёт тот же 404 (или 200 с пустым items → None, и при
+        # просроченном локальном timestamp сработает F4-ветка). Если алерт
+        # «дважды подряд» повторяется, а Instagram фактически работает, — первым
+        # делом проверить руками доступность instagram.com/p/BsOGulcndj-/.
         if alive is True:
             # Сервер подтвердил живость — даже если локальный timestamp старше.
-            logger.debug("Cookie-check Instagram: OK (ping)")
+            logger.debug("Cookie-check Instagram: OK (контентная проба)")
         elif alive is False:
-            logger.warning("Cookie-check Instagram: sessionid мёртв (ping)")
-            notify_admin_cookies_expired(self._bot, "Instagram")
+            logger.warning(
+                "Cookie-check Instagram: контентная проба не прошла дважды подряд"
+            )
+            notify_admin_cookies_expired(self._bot, "Instagram", _INSTAGRAM_ALERT_REASON)
         elif expired is True:
             logger.warning(
                 "Cookie-check Instagram: sessionid просрочена (по файлу), "
-                "живую проверку провести не удалось"
+                "контентную пробу провести не удалось"
             )
-            notify_admin_cookies_expired(self._bot, "Instagram")
+            notify_admin_cookies_expired(self._bot, "Instagram", _INSTAGRAM_ALERT_REASON)
         else:
             logger.debug(
                 "Cookie-check Instagram: статус неизвестен (сеть/rate-limit), без алерта"

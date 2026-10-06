@@ -186,19 +186,30 @@ _cookies_alert_last: dict[str, float] = {}  # platform -> monotonic timestamp
 _COOKIES_ALERT_COOLDOWN = 30 * 60  # 30 минут
 
 
-def notify_admin_cookies_expired(bot, platform: str) -> None:
-    """Уведомляет админов о протухших cookies для сервиса (с дебаунсом)."""
+def notify_admin_cookies_expired(bot, platform: str, reason: str | None = None) -> None:
+    """Уведомляет админов о протухших cookies для сервиса (с дебаунсом).
+
+    reason=None — прежний текст (контекст реальной ошибки пользователя);
+    reason — честная причина от монитора (плановая проверка не прошла).
+    """
     now = time.monotonic()
     with _cookies_alert_lock:
         last = _cookies_alert_last.get(platform, 0)
         if now - last < _COOKIES_ALERT_COOLDOWN:
             return
         _cookies_alert_last[platform] = now
-    message = (
-        f"{EMOJI_ALERT} <b>Cookies {platform} протухли!</b>\n\n"
-        f"Пользователь получил ошибку авторизации.\n"
-        f"Загрузите свежие cookies через бота."
-    )
+    if reason is None:
+        message = (
+            f"{EMOJI_ALERT} <b>Cookies {platform} протухли!</b>\n\n"
+            f"Пользователь получил ошибку авторизации.\n"
+            f"Загрузите свежие cookies через бота."
+        )
+    else:
+        message = (
+            f"{EMOJI_ALERT} <b>Cookies {platform}: плановая проверка не прошла</b>\n\n"
+            f"{reason}\n"
+            f"Загрузите свежие cookies через бота."
+        )
     for admin_id in ADMIN_IDS:
         try:
             bot.send_message(admin_id, message, parse_mode="HTML")
